@@ -1,5 +1,10 @@
 # AG Pay
 
+[![Status: Prototype](https://img.shields.io/badge/status-prototype-F59E0B?style=flat-square)](#what-we-are-building)
+[![Autonomy: Human Supervised](https://img.shields.io/badge/autonomy-human_supervised-7C3AED?style=flat-square)](#what-we-are-building)
+[![Security: No Raw Card Data](https://img.shields.io/badge/security-no_raw_card_data-0891B2?style=flat-square)](#what-we-are-building)
+[![Contributions Welcome](https://img.shields.io/badge/contributions-welcome-16A34A?style=flat-square)](#help-build-the-payment-layer-for-agents)
+
 ![AI agents purchasing goods and digital services through AG Pay](assets/ag-pay-agent-commerce.png)
 
 **A human-supervised payment control plane for AI agents.**
@@ -81,119 +86,3 @@ Start with the [project documentation](docs/README.md) to understand the
 current scope and architecture. Then open an issue to share an idea, discuss a
 design, or identify a gap. If you already know what you want to improve, a
 focused pull request is welcome.
-
-## About this repository
-
-This base repository owns shared product and architecture documentation plus local development infrastructure. Application code lives in separate repositories under `dev/`, which is intentionally ignored by this repository.
-
-## Repository layout
-
-```text
-.
-├── docs/                 Product and architecture documentation
-├── AGENTS.md             Guardrails and checks for development agents
-├── dev/                  Ignored workspace for nested repositories
-│   ├── ag-platform/      Backend and web frontend monorepo
-│   ├── mobile/           Mobile application (future)
-│   └── ak-kit/           OpenClaw plugin and future developer SDK
-├── docker-compose.yml    PostgreSQL, Redis, and pgAdmin
-└── Makefile              Local infrastructure commands
-```
-
-## Local infrastructure
-
-Docker with Compose v2 is required. Start the services with:
-
-```bash
-make init-env
-make infra-up
-```
-
-The default development endpoints are bound to localhost only:
-
-- PostgreSQL: `127.0.0.1:5432`
-- Redis: `127.0.0.1:6379`
-- pgAdmin: <http://127.0.0.1:5050>
-
-The development credentials are documented in `.env.example`. Copying that file creates `.env`, where local overrides belong. Do not reuse these credentials outside local development.
-
-From another Compose service, connect to PostgreSQL at `postgres:5432` and Redis at `redis:6379`. In pgAdmin, register a server using host `postgres`, port `5432`, and the PostgreSQL credentials from `.env`.
-
-Useful commands:
-
-```bash
-make infra-check    # Validate Compose configuration
-make infra-ps       # Show service health and status
-make infra-logs     # Follow service logs
-make infra-down     # Stop services without deleting their data
-```
-
-PostgreSQL, Redis, and pgAdmin data is stored in Docker named volumes and survives `make infra-down`.
-
-## Documentation and applications
-
-Start with [`docs/README.md`](docs/README.md) for the product scope, domain model,
-API contract, security model, payment boundary, and operating notes.
-
-The first application prototype is the independent monorepo at
-`dev/ag-platform`. After starting the infrastructure, install and run the API:
-
-```bash
-cd dev/ag-platform
-make api-install
-cp .env.example .env
-make api-migrate
-make api-run
-```
-
-In another terminal, install and run the Next.js management UI:
-
-```bash
-cd dev/ag-platform
-make web-install
-cp apps/web/.env.example apps/web/.env.local
-make web-run
-```
-
-Open <http://localhost:3000>. The web app provides registration and login,
-overview and approval queues, visual agent management, safe virtual-card
-metadata, per-agent approval rules at `/rules`, and purchase/subscription
-history. It sends human API requests through a same-origin Next.js
-backend-for-frontend (BFF), which keeps the FastAPI bearer token in an HttpOnly
-cookie.
-
-To populate an existing account with repeatable local demo data:
-
-```bash
-cd dev/ag-platform
-make seed-demo SEED_USERNAME=your-existing-username
-```
-
-The demo set contains seven OpenClaw/Hermes agents, fake Qonto virtual-card
-metadata assigned to them, ten completed purchases, four monthly USD service
-subscriptions priced at $20 or more, three pending proposals, and one approved
-item waiting for external completion. It contains no raw card credentials.
-
-Run the combined static checks from `dev/ag-platform` with `make lint`, the API
-tests with `make test`, and the production web build with `make web-build`.
-
-The OpenClaw integration is the independent package in `dev/ak-kit`:
-
-```bash
-cd dev/ak-kit
-pnpm install
-make check
-make pack-check
-```
-
-Its README documents private pairing, SecretRef configuration, local package
-installation, and the current no-live-payment boundary.
-
-New agents default to requiring human approval for every proposal. A user may
-configure narrower per-agent review rules, but an automatic policy decision
-only changes the control-plane cart state: it does not charge a card or grant
-unbounded issuer permission. The agent still completes checkout outside AG Pay
-and reports the result. Only fake or provider-sandbox references belong in
-local development. The mobile repository remains a placeholder. `dev/ak-kit`
-now contains the independently versioned OpenClaw plugin; a broader public SDK
-remains later work.
