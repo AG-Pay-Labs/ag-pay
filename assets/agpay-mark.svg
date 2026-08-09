@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <title>AG Pay mark</title>
+  <rect width="64" height="64" rx="14" fill="#0E0915"/>
+  <path
+    d="M16 13.5h23.5C46.404 13.5 52 19.096 52 26v24.5H16a4.5 4.5 0 0 1-4.5-4.5V18a4.5 4.5 0 0 1 4.5-4.5Z"
+    stroke="#F7F3E9"
+    stroke-width="3"
+    stroke-linejoin="round"
+  />
+  <rect
+    x="35.5"
+    y="37"
+    width="23"
+    height="12.5"
+    rx="2.5"
+    fill="#7C3AED"
+    stroke="#0E0915"
+    stroke-width="3"
+  />
+  <circle
+    cx="51.5"
+    cy="13"
+    r="5.25"
+    fill="#C4B5FD"
+    stroke="#F7F3E9"
+    stroke-width="2.5"
+  />
+</svg>

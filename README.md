@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/agpay-mark.png" width="112" alt="AG Pay logo" />
+</p>
+
 # AG Pay
 
 [![Status: Prototype](https://img.shields.io/badge/status-prototype-F59E0B?style=flat-square)](#what-we-are-building)
@@ -8,6 +12,168 @@
 ![AI agents purchasing goods and digital services through AG Pay](assets/ag-pay-agent-commerce.png)
 
 **A human-supervised payment control plane for AI agents.**
+
+## Quick start
+
+The public development workspace is made of independent repositories nested
+under the base repository's ignored `dev/` directory. They are regular Git
+repositories, not submodules.
+
+### Tech stack
+
+| Component | Technology |
+| --- | --- |
+| Platform API | Python 3.12, FastAPI, Pydantic, async SQLAlchemy, Alembic |
+| Web application | Next.js 16, React 19, TypeScript, Tailwind CSS 4, shadcn/Radix, TanStack Query |
+| Data and local infrastructure | PostgreSQL 16, Redis 7, pgAdmin, Docker Compose |
+| OpenClaw plugin | TypeScript, TypeBox, OpenClaw 2026.7.1-2, Vitest, ESLint |
+| OpenClaw playground | Docker Compose, pinned OpenClaw Gateway, packaged local AG Pay plugin |
+
+The prototype is a supervised control plane with an opt-in managed-checkout
+path. For an explicitly configured merchant adapter and Stripe Issuing virtual
+card reference, approval queues a durable job; a trusted worker uses
+Browserbase and deterministic Playwright automation without exposing card data
+to OpenClaw or an LLM. Other proposals retain the legacy external-completion
+flow. This narrow integration is not a universal or production-ready payment
+processor.
+For a complete visual sandbox run, a separate development-only Stripe Payments
+rail drives Stripe's official success/decline fixtures through Browserbase and
+the same durable AG Pay/OpenClaw outcome path; see `docs/managed-checkout.md`.
+
+### Prerequisites
+
+- Git, a POSIX-like shell, and GNU or BSD Make;
+- Docker Desktop or Docker Engine with Compose v2;
+- Python 3.12 available as `python3.12`;
+- Node.js 24.15.x and pnpm 11.9.0 for one toolchain that satisfies both the web
+  application and OpenClaw plugin; and
+- free local ports `3000`, `5050`, `5432`, `6379`, `8000`, and `18789`.
+
+An OpenAI API key, or another model-provider configuration, is optional and is
+needed only for actual model-backed OpenClaw turns. Never paste provider keys,
+pairing tokens, agent tokens, or payment credentials into an agent chat.
+
+### 1. Clone the base repository
+
+```bash
+git clone https://github.com/AG-Pay-Labs/ag-pay.git
+cd ag-pay
+```
+
+### 2. Clone the nested repositories
+
+```bash
+mkdir -p dev
+git clone https://github.com/AG-Pay-Labs/ag-pay-platform.git dev/ag-pay-platform
+git clone https://github.com/AG-Pay-Labs/ag-plugin-openclaw.git dev/ag-plugin-openclaw
+git clone https://github.com/AG-Pay-Labs/ag-openclaw-playground.git dev/ag-openclaw-playground
+```
+
+Keep these repositories independent. Do not add them to the base repository as
+submodules or stage their files from the base repository.
+
+### 3. Set up each repository
+
+Run the following commands one at a time from the base repository root.
+
+Start PostgreSQL, Redis, and pgAdmin:
+
+```bash
+make init-env
+make infra-check
+make infra-up
+make infra-ps
+```
+
+Install and configure the platform:
+
+```bash
+cd dev/ag-pay-platform
+make api-install
+test -f .env || cp .env.example .env
+make api-migrate
+make web-install
+test -f apps/web/.env.local || cp apps/web/.env.example apps/web/.env.local
+cd ../..
+```
+
+Install and verify the OpenClaw plugin package. The plugin is a package loaded
+by OpenClaw, not a standalone server:
+
+```bash
+cd dev/ag-plugin-openclaw
+make install
+make check
+make pack-check
+cd ../..
+```
+
+Start the API in one terminal:
+
+```bash
+cd dev/ag-pay-platform
+make api-run
+```
+
+Start the web application in a second terminal:
+
+```bash
+cd dev/ag-pay-platform
+make web-run
+```
+
+When managed checkout is configured, start its worker in a third terminal:
+
+```bash
+cd dev/ag-pay-platform
+make checkout-worker
+```
+
+The local services are then available at:
+
+- web application: `http://127.0.0.1:3000`;
+- API documentation: `http://127.0.0.1:8000/docs`;
+- API readiness: `http://127.0.0.1:8000/health/ready`; and
+- pgAdmin: `http://127.0.0.1:5050`.
+
+### OpenClaw playground
+
+The `dev/ag-openclaw-playground` repository builds the sibling
+`dev/ag-plugin-openclaw` package into a pinned Dockerized OpenClaw runtime.
+Keep the API running, then run:
+
+```bash
+cd dev/ag-openclaw-playground
+make init
+# Optional: add OPENAI_API_KEY to .env for model-backed turns.
+make check
+make smoke
+make ps
+make dashboard
+```
+
+Create an agent in the AG Pay web UI before running `make pair`; that command
+accepts its one-time token at a hidden prompt. Run `make smoke` again afterward
+to verify the Gateway, plugin, and SecretRef integration. The Control UI is at
+`http://127.0.0.1:18789`. See the playground README for provider and Linux
+networking details.
+
+Stop the API and web processes with `Ctrl+C`. Run `make infra-down` from the
+base repository and `make down` from `dev/ag-openclaw-playground` to stop all
+Docker services without deleting their data.
+
+### Set up with a coding agent
+
+The canonical coding-agent workflow is in [`AGENTS.md`](AGENTS.md), with a
+[`CLAUDE.md`](CLAUDE.md) entry point for Claude Code. From the base repository,
+you can ask:
+
+> Read AGENTS.md and follow its full local development bootstrap workflow. Set
+> up every required repository, preserve existing files and secrets, run all
+> documented health checks, and report anything that requires my input.
+
+The agent will leave account registration, provider-key entry, and OpenClaw
+pairing to you because those steps handle human or secret input.
 
 ## The vision
 
@@ -55,10 +221,13 @@ AG Pay is exploring a control layer where:
 
 The current prototype deliberately starts with **supervised autonomy**. An agent
 proposes a purchase and a human approves or cancels it. Configurable rules can
-change how a proposal moves through AG Pay, but the platform does not currently
-charge a card or execute a live payment; the agent completes checkout outside
-AG Pay and reports the result. Live payment execution requires a future
-issuer/provider integration.
+change how a proposal moves through AG Pay. A narrowly scoped managed path can
+then execute an allowlisted checkout through Browserbase and Stripe Issuing;
+the provider reference stays in AG Pay and raw payment fields exist only in the
+trusted worker's memory. Unsupported merchants and payment providers remain on
+the legacy external-result path. Broader live use still requires merchant
+adapters, issuer controls, reconciliation, compliance review, and production
+security hardening.
 
 ## Why open source
 
