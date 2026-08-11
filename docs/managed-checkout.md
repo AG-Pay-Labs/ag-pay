@@ -5,7 +5,24 @@
 Managed checkout is an opt-in, post-approval execution path. An agent still
 researches a product and submits a cart item. When that item includes a
 server-configured checkout adapter and an HTTPS checkout URL, approval and job
-creation happen in one PostgreSQL transaction. A separate worker then:
+creation happen in one PostgreSQL transaction.
+
+Two deliberately separate rails are implemented:
+
+- the configured-merchant rail retrieves a tenant-bound Stripe Issuing virtual
+  card and submits it through an operator-reviewed merchant adapter; and
+- the development-only `stripe-hosted` proof creates a Stripe **test-mode**
+  Checkout Session from the exact approved title, quantity, unit amount, and
+  currency, then has Browserbase fill Stripe's hosted page with a selected
+  built-in test fixture.
+
+The hosted proof is the recommended end-to-end demo because Stripe is publicly
+reachable from Browserbase and its API provides an authoritative success or
+decline result. The supplied `product_url` remains evidence for the proposal;
+the proof does not add an item to that source merchant's cart, create an order
+there, or claim arbitrary-site purchasing.
+
+For the configured-merchant rail, a separate worker:
 
 1. locks and leases the queued execution, then takes a PostgreSQL advisory lock
    for the selected Issuing card so two workers cannot correlate concurrent
@@ -13,7 +30,7 @@ creation happen in one PostgreSQL transaction. A separate worker then:
 2. revalidates the agent, card assignment, cart state, exact amount, currency,
    adapter snapshot, and the single checkout origin frozen by human approval;
 3. opens a Browserbase session with recording, session logging, and CAPTCHA
-   solving disabled;
+   solving disabled for configured-merchant/Issuing sessions;
 4. verifies the merchant's displayed product title, quantity, and total before
    retrieving card data and again immediately before submission;
 5. retrieves an active Stripe Issuing virtual card directly in worker memory;
@@ -33,6 +50,15 @@ purchase-request-to-session mapping locally, injects a fixed safe outcome into
 the originating session, and requests an event heartbeat. Browserbase IDs,
 provider references, raw errors, merchant HTML, and card data are not sent to
 OpenClaw.
+
+For `stripe-hosted`, the worker creates the provider session only after human
+approval. It binds both the Checkout Session and resulting PaymentIntent to the
+execution ID, checks test mode plus exact amount/currency metadata through the
+Stripe API, and treats the provider response—not page copy or a redirect—as the
+terminal authority. A verified decline becomes `failed` with
+`payment_declined`; a verified payment becomes `succeeded` and creates the AG
+Pay purchase record; a required challenge becomes `action_required`; and an
+unverifiable post-submit result becomes `outcome_unknown` without retry.
 
 This is deliberately not a universal arbitrary-site buyer. Only explicit
 adapter keys and origins configured by the platform operator are eligible.
@@ -91,6 +117,11 @@ use a distinct virtual card for a new approved request.
 publication is only a best-effort wake/observability aid and is not required for
 recovery.
 
+`CheckoutStatusTransition` is the separate durable human lifecycle history.
+It records initial queueing, every worker claim, safe pre-submit requeue, and
+the terminal outcome in the same transactions as the corresponding execution
+state changes. This history is shown in AG Pay but is not sent to OpenClaw.
+
 ## Credential boundary
 
 - The database stores `provider=stripe_issuing` and an opaque `ic_...` card ID,
@@ -108,10 +139,17 @@ recovery.
   repository, or chat.
 - The worker expands the virtual card number and CVC only immediately before
   deterministic form filling. No model or Stagehand call receives them.
-- Payment browser sessions use `recordSession=false`, `logSession=false`,
-  `solveCaptchas=false`, no persistent Browserbase context, and an origin
-  allowlist. Browserbase's domain control is defense in depth; the worker also
-  validates every top-level page and frame before filling or submitting.
+- On the hosted development rail, the database stores only one of the safe
+  `pm_stripe_demo_*` references. The corresponding public Stripe test values
+  are fixed inside the trusted worker and are materialized only for form fill;
+  they are not API, web, OpenClaw, database, or telemetry fields.
+- Configured-merchant and Issuing payment sessions use `recordSession=false`,
+  `logSession=false`, `solveCaptchas=false`, no persistent Browserbase context,
+  and an origin allowlist. The built-in development-only `stripe-hosted` rail
+  hardcodes `recordSession=true` and `logSession=true` so operators can replay
+  checkouts that use only public Stripe test-card fixtures. Browserbase's domain
+  control is defense in depth; the worker also validates every top-level page
+  and frame before filling or submitting.
 - The Browserbase account, worker process, provider account, and operational
   access are still in the card-data trust boundary. PCI, legal, provider, and
   incident-response review remain production launch requirements.
@@ -165,10 +203,10 @@ make api-migrate
 make checkout-worker
 ```
 
-Worker startup fails closed when checkout is disabled or Browserbase/Stripe
-credentials are missing. Invalid or absent adapter configuration prevents a new
-managed request from being approved; an already frozen valid execution can
-still be recovered by the worker.
+Worker startup fails closed when checkout is disabled or the Browserbase and
+Stripe credentials required by the enabled rail are missing. Invalid or absent
+adapter configuration prevents a new managed request from being approved; an
+already frozen valid execution can still be recovered by the worker.
 
 ## Automated verification
 
@@ -198,13 +236,198 @@ serialization, OpenClaw session routing, restart recovery, and event
 deduplication. Playground smoke is non-purchasing and proves only the Gateway,
 plugin, SecretRef, and tool/service surfaces.
 
-## End-to-end Browserbase decline demo (recommended)
+## Stripe-hosted Browserbase proof (recommended)
 
-This development-only rail is the simplest full demonstration. It uses Stripe
-Payments test mode, a fixed AG Pay demo merchant, Browserbase, and Stripe's
+This is the shortest truthful end-to-end demonstration of the concept. The
+agent can inspect any public product page and submit its URL plus exact product
+facts. After the human approves, AG Pay creates a new Stripe test-mode Checkout
+Session containing those approved facts, Browserbase fills the hosted Stripe
+form from AG Pay's saved billing profile and selected fake card fixture, and
+the worker waits for Stripe's API result. No local merchant, HTTPS tunnel,
+publishable key, port `8100`, real card, or Stripe Issuing card is involved.
+
+This proves the supervised workflow, browser form filling, provider outcome
+detection, durable status history, web notification, and OpenClaw callback. It
+does **not** prove a purchase from the product URL's merchant. A `succeeded`
+result is a Stripe test-mode payment and an AG Pay purchase record only.
+
+### 1. Create test accounts
+
+1. In Stripe, enable **Test mode** and copy an `sk_test_...` secret key from
+   **Developers → API keys**. A `pk_test_...` key is not needed for this rail.
+2. In Browserbase, create a project and copy its project ID and API key.
+3. Keep both values in the untracked platform `.env`; never put them in
+   OpenClaw configuration, a prompt, source control, or chat.
+
+### 2. Configure `dev/ag-pay-platform/.env`
+
+Start from `.env.example`, retain the existing database/application values, and
+set the checkout values below:
+
+```dotenv
+ENVIRONMENT=development
+CHECKOUT_ENABLED=true
+CHECKOUT_DEMO_ENABLED=true
+CHECKOUT_HOSTED_DEMO_ENABLED=true
+BROWSERBASE_API_KEY=your_browserbase_key
+BROWSERBASE_PROJECT_ID=your_browserbase_project_id
+BROWSERBASE_REGION=eu-central-1
+STRIPE_DEMO_SECRET_KEY=sk_test_your_stripe_test_secret
+```
+
+`CHECKOUT_HOSTED_DEMO_ENABLED=true` installs the pinned `stripe-hosted` adapter
+with bootstrap URL `https://checkout.stripe.com/`. It requires
+`CHECKOUT_DEMO_ENABLED=true`, accepts only the built-in demo payment-method
+references, and fails startup outside `development` or `test`. Do not add or
+override `stripe-hosted` in `CHECKOUT_ADAPTERS`. `STRIPE_SECRET_KEY` is for the
+separate Issuing rail and is not required here.
+
+### 3. Start the platform
+
+Use a separate terminal for each long-running process:
+
+```bash
+cd ag-pay
+make infra-up
+```
+
+```bash
+cd ag-pay/dev/ag-pay-platform
+make api-install
+make api-migrate
+make api-run
+```
+
+```bash
+cd ag-pay/dev/ag-pay-platform
+make web-install
+make web-run
+```
+
+```bash
+cd ag-pay/dev/ag-pay-platform
+make checkout-worker
+```
+
+Open AG Pay at `http://127.0.0.1:3000`. The API runs on port `8000`; nothing for
+this hosted proof runs on port `8100`.
+
+### 4. Create the supervised test identity
+
+1. Register or sign in to AG Pay.
+2. Start the playground and its packaged sibling plugin:
+
+```bash
+cd ag-pay/dev/ag-openclaw-playground
+make init
+# Add a model-provider key to the untracked .env only if a model-backed turn is needed.
+make check
+make smoke
+make ps
+make dashboard
+```
+
+3. Create an agent in AG Pay, then run `make pair` in the playground and enter
+   the one-time token only at its hidden prompt. Run `make smoke` again to check
+   the paired plugin surfaces. Smoke does not execute or prove a purchase.
+4. Seed the three safe test payment methods and assign them to the account's
+   agents:
+
+```bash
+cd ag-pay/dev/ag-pay-platform
+make seed-checkout-demo SEED_USERNAME=your-login-email@example.com
+```
+
+Refresh **Cards**. The account now has **Stripe demo · succeeds**, **Stripe demo
+· declines**, and **Stripe demo · 3DS**, each with a complete fake billing
+profile. The database contains safe references and display metadata, not raw
+card fields.
+
+The standard playground configuration supplies the plugin default pair
+`stripe-hosted` and `https://checkout.stripe.com/`. When running OpenClaw another
+way, configure the same non-secret pair as `defaultCheckoutAdapter` and
+`defaultCheckoutUrl`, or supply both checkout fields explicitly. The platform,
+not OpenClaw, owns Browserbase and Stripe credentials.
+
+### 5. Ask OpenClaw for a one-time purchase
+
+Give OpenClaw a public product link and make the expected facts explicit for a
+repeatable demo. Replace the placeholders below with facts visible on that
+page. The normalized title must be at most 127 characters so Stripe Checkout
+can display and AG Pay can verify it without truncation:
+
+```text
+Inspect <PUBLIC_PRODUCT_URL> and request human approval through AG Pay for
+<QUANTITY> units of “<EXACT_PRODUCT_TITLE>” at exactly <CURRENCY>
+<UNIT_PRICE> each. Use that page as the product URL. This is a one-time
+purchase. Do not claim it was purchased from the source merchant; wait for AG
+Pay's terminal checkout outcome.
+```
+
+The OpenClaw tool sends the product URL, normalized title, description,
+merchant, reason, quantity, unit price, currency, and merchant-account fields.
+For a one-time request that omits checkout fields, the plugin adds its configured
+default pair after the model call. AG Pay stores the request as `proposed`; no
+Stripe Checkout Session exists yet.
+
+### 6. Approve and watch the provider outcome
+
+1. Open **Approvals** and verify the source URL, title, quantity, unit price,
+   currency, and total.
+2. Select **Stripe demo · declines** and approve. Approval and the initial
+   `queued` execution history entry commit together.
+3. The worker claims the job (`running`), creates a `cs_test_...` Checkout
+   Session from the frozen facts, opens Browserbase, verifies Stripe's displayed
+   item/quantity/total, fills the saved billing fields and fake card, and
+   submits once.
+4. While it is active, use **Open Browserbase session** on the approval card to
+   inspect the browser. Do not grant that live-view access outside trusted test
+   operators.
+5. The worker polls Stripe for the exact Checkout Session and expanded
+   PaymentIntent, checking test mode, execution metadata, amount, and currency.
+   For the official decline fixture, it expires the exact session and requires
+   Stripe to return that session as test-mode, unpaid, expired, and bound to the
+   execution before recording `failed/payment_declined`. If expiration cannot
+   be established, it records `outcome_unknown` instead. Neither path creates a
+   purchase row.
+6. The web app polls active executions, renders the ordered
+   `queued → running → failed` timeline, routes the item to **Needs attention**,
+   and shows a one-time failure toast. The terminal event is persisted for the
+   agent; the OpenClaw outcome monitor delivers a fixed sanitized failure to the
+   originating session and requests its next turn.
+
+Repeat with **Stripe demo · succeeds**. The expected timeline is
+`queued → running → succeeded`; AG Pay creates one purchase record and can
+retain Stripe's safe test receipt URL. **Stripe demo · 3DS** exercises
+`action_required`. If submission may have happened but Stripe cannot establish
+the result within the bounded polling window, expect `outcome_unknown` and
+reconcile manually—never approve a blind retry.
+
+### 7. What to verify
+
+- The request cannot queue until a human selects an assigned method and
+  approves it.
+- The Checkout Session line item exactly matches the approved title, quantity,
+  amount, and currency; changing displayed facts fails closed before fill.
+- The decline path ends in `failed/payment_declined`, appears in the panel, and
+  creates no purchase.
+- The success path ends in `succeeded`, appears in history, and creates exactly
+  one AG Pay purchase backed by a verified test PaymentIntent.
+- OpenClaw receives only the request ID, safe status, amount/currency, purchase
+  ID when present, and fixed error code—not a browser session, provider secret,
+  raw provider error, or card field.
+
+## Local demo-merchant rail (optional legacy fixture)
+
+This development-only rail uses Stripe Payments test mode, a fixed AG Pay demo
+merchant, Browserbase, and Stripe's
 official decline fixture. It does **not** require a Stripe Issuing card,
 `agpay_owner_id` metadata, a real card, or a charge. AG Pay and OpenClaw see only
 `pm_stripe_demo_decline`; test card values exist only inside the trusted worker.
+
+Prefer the hosted proof above. This older fixture remains useful when changing
+the direct adapter implementation itself, but it requires the local merchant on
+port `8100`, a public HTTPS tunnel, and a Stripe test publishable key.
 
 ### 1. Create the sandbox accounts
 
@@ -229,33 +452,38 @@ DEMO_PRODUCT_TITLE=AG Pay Browserbase Demo
 DEMO_AMOUNT_MINOR=2500
 DEMO_CURRENCY=EUR
 CHECKOUT_DEMO_OBSERVATION_SECONDS=30
-CHECKOUT_ADAPTERS={"stripe-demo":{"allowed_origins":["https://YOUR-DEMO-HOST"],"payment_origins":["https://js.stripe.com"],"resource_origins":["https://api.stripe.com","https://js.stripe.com","https://m.stripe.com","https://m.stripe.network","https://q.stripe.com","https://r.stripe.com","https://hooks.stripe.com","https://b.stripecdn.com"],"product_title_selector":"[data-checkout-product-title]","quantity_selector":"[data-checkout-quantity]","total_selector":"[data-checkout-total]","card_number_selector":"input[name='cardnumber']","expiry_selector":"input[name='exp-date']","cvc_selector":"input[name='cvc']","submit_selector":"#submit","success_selector":"[data-order-confirmed]","decline_selector":"[data-payment-failed]","action_required_selector":"[data-action-required]","order_reference_selector":"[data-order-reference]"}}
+CHECKOUT_ADAPTERS={"stripe-demo":{"allowed_origins":["https://YOUR-DEMO-HOST"],"payment_origins":["https://js.stripe.com","https://m.stripe.network"],"resource_origins":["https://api.stripe.com","https://js.stripe.com","https://m.stripe.com","https://q.stripe.com","https://r.stripe.com","https://hooks.stripe.com","https://b.stripecdn.com"],"product_title_selector":"[data-checkout-product-title]","quantity_selector":"[data-checkout-quantity]","total_selector":"[data-checkout-total]","card_number_selector":"input[name='cardnumber']","expiry_selector":"input[name='exp-date']","cvc_selector":"input[name='cvc']","submit_selector":"#submit","success_selector":"[data-order-confirmed]","decline_selector":"[data-payment-failed]","action_required_selector":"[data-action-required]","order_reference_selector":"[data-order-reference]"}}
 ```
+
+Stripe Elements currently creates frames on both `js.stripe.com` and
+`m.stripe.network`, so both exact origins must be reviewed and listed in
+`payment_origins`. More generally, list every permitted checkout iframe origin
+there; `resource_origins` is only for non-frame network resources.
 
 ### 3. Start each service in its own terminal
 
 ```bash
-cd /Users/vitaliibulyzhyn/Desktop/ag-pay
+cd ag-pay
 make infra-up
 ```
 
 ```bash
-cd /Users/vitaliibulyzhyn/Desktop/ag-pay/dev/ag-pay-platform
+cd ag-pay/dev/ag-pay-platform
 make api-migrate && make api-run
 ```
 
 ```bash
-cd /Users/vitaliibulyzhyn/Desktop/ag-pay/dev/ag-pay-platform
+cd ag-pay/dev/ag-pay-platform
 make web-run
 ```
 
 ```bash
-cd /Users/vitaliibulyzhyn/Desktop/ag-pay/dev/ag-pay-platform
+cd ag-pay/dev/ag-pay-platform
 make demo-merchant-run
 ```
 
 ```bash
-cd /Users/vitaliibulyzhyn/Desktop/ag-pay/dev/ag-pay-platform
+cd ag-pay/dev/ag-pay-platform
 make checkout-worker
 ```
 
@@ -278,7 +506,7 @@ or OpenClaw. Verify `https://YOUR-DEMO-HOST/health/live` and
 Create your AG Pay user and at least one agent in the UI, pair OpenClaw, then run:
 
 ```bash
-cd /Users/vitaliibulyzhyn/Desktop/ag-pay/dev/ag-pay-platform
+cd ag-pay/dev/ag-pay-platform
 make seed-checkout-demo SEED_USERNAME=your-login-email@example.com
 ```
 

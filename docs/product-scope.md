@@ -4,7 +4,7 @@
 
 AG Pay is an agent-wallet control plane for purchases initiated by AI agents. A person connects OpenClaw-like agents, adds tokenized payment methods with personal or business billing information, assigns allowed cards to agents, configures when each agent needs human review, and retains an attributable history of proposals, purchases, and subscriptions.
 
-The first release is **supervised autonomy by default**: the agent researches and proposes, and every new agent initially requires human approval. An owner can opt individual agents into limited server-side automatic approval rules. For proposals that name an operator-configured adapter, approval queues a narrow Browserbase + Stripe Issuing checkout owned by AG Pay; other proposals retain legacy agent-reported sandbox completion. AG Pay is not a card issuer, card vault, bank, merchant of record, acquirer, or universal payment executor.
+The first release is **supervised autonomy by default**: the agent researches and proposes, and every new agent initially requires human approval. An owner can opt individual agents into limited server-side automatic approval rules. For proposals that name an operator-configured adapter, approval queues a narrow Browserbase + Stripe Issuing checkout owned by AG Pay; a separate development-only adapter creates Stripe-hosted test Checkout Sessions from approved facts for a complete fake-card proof. Other proposals retain legacy agent-reported sandbox completion. Neither managed rail turns an arbitrary source product URL into a merchant order. AG Pay is not a card issuer, card vault, bank, merchant of record, acquirer, or universal payment executor.
 
 ## Problem
 
@@ -35,7 +35,7 @@ An OpenClaw-like process is paired to exactly one platform user. It heartbeats, 
 
 ### Payment provider or issuer
 
-A third party tokenizes or issues cards and owns the durable raw-card-data boundary. The managed worker supports Stripe Issuing virtual-card references and retrieves expanded number/CVC fields only into transient worker memory immediately before deterministic form fill. The server stores the opaque reference and safe display metadata only.
+A third party tokenizes or issues cards and owns the durable raw-card-data boundary. The configured-merchant worker supports Stripe Issuing virtual-card references and retrieves expanded number/CVC fields only into transient worker memory immediately before deterministic form fill. The development-only hosted proof uses public fixed Stripe test values materialized inside that same trusted worker. The server stores only the opaque or safe fake reference and display metadata.
 
 ### Operator
 
@@ -61,7 +61,10 @@ The web app can sign out by clearing its local session cookie. The backend does 
 - Inspect compact OpenClaw/Hermes runtime cards and open a detail sheet for health, capabilities, assignments, re-pairing, and revocation.
 - Add safe sandbox/provider payment-method metadata with personal or business billing information, view it as a masked virtual card, and manage agent/card assignments.
 - Configure each agent's review policy on `/rules`.
-- Review proposed, approved, purchased, and cancelled cart items; approve or cancel proposals and reveal a merchant credential after password confirmation.
+- Review proposed, approved, purchased, and cancelled cart items; approve or
+  cancel proposals; inspect managed status timelines and active Browserbase
+  sessions; receive terminal outcome toasts; and reveal a merchant credential
+  after password confirmation.
 - Browse attributed purchases and recurring subscriptions and maintain locally tracked subscription status.
 - Adapt the management shell and entity views to desktop and mobile browser widths.
 
@@ -118,7 +121,8 @@ Thresholds contain a non-negative fixed-precision amount and uppercase three-let
 Automatic approval applies only to an unmanaged legacy proposal and is
 conditional on an active payment method assigned to the agent. A proposal with
 managed checkout fields always remains `proposed` until the human selects an
-assigned Stripe Issuing method; that approval queues its execution atomically.
+assigned method supported by that adapter; that approval queues its execution
+atomically.
 
 `never` means “do not pause an unmanaged legacy proposal for human review.” It
 is not an unlimited issuer permission, does not apply to managed checkout, and
@@ -168,7 +172,10 @@ Changing local subscription status does not execute a merchant cancellation.
 ### Add and assign a card
 
 1. In the web UI, the user supplies an opaque provider reference and safe display metadata; raw PAN and CVC fields do not exist.
-2. For managed sandbox checkout, the reference is a Stripe Issuing `ic_...` identifier. Provider-hosted onboarding remains required before production use.
+2. For configured-merchant managed sandbox checkout, the reference is a Stripe
+   Issuing `ic_...` identifier. For the development-only `stripe-hosted` proof,
+   the seeder creates safe `pm_stripe_demo_*` fixture references. Provider-hosted
+   onboarding remains required before production use.
 3. The user sends only the provider reference, safe card metadata, and personal/business billing details to AG Pay.
 4. The user assigns the method to one or more agents.
 5. AG Pay prevents approval/completion after the card is disabled or unassigned.
@@ -194,6 +201,15 @@ Use only fake references or Stripe test-mode Issuing references until provider o
 8. A definite pre-submit failure, interactive challenge, or ambiguous post-submit result becomes `failed`, `action_required`, or `outcome_unknown`. A legacy proposal can still use the gated external sandbox result endpoint.
 9. The user sees the state in approvals and purchase/subscription history and can reveal the merchant login with current-password confirmation.
 
+For the development-only `stripe-hosted` proof, steps 5–6 substitute a
+server-created Stripe test Checkout Session and built-in fake card fixture. The
+worker copies the approved title, quantity, unit amount, and currency into the
+session, fills Stripe's publicly hosted page through Browserbase, and waits for
+the bound Checkout Session/PaymentIntent result through Stripe's API. The web
+shows every durable status transition plus a terminal toast, and the same
+sanitized terminal event wakes the originating OpenClaw session. This proves
+the control and notification loop, not an order at the proposal's source URL.
+
 ## Acceptance criteria for the prototype
 
 - A user can register, authenticate, and read only their resources.
@@ -213,6 +229,9 @@ Use only fake references or Stripe test-mode Issuing references until provider o
 - Disabling/unassigning the card after approval prevents completion.
 - Purchase completion requires the exact proposed amount/currency and can create only one purchase.
 - Managed approval creates only one durable execution; concurrent workers claim it once.
+- The hosted test proof creates its Stripe Checkout Session only after approval,
+  verifies the exact bound test PaymentIntent, and never represents that result
+  as an order from the source product URL.
 - Browserbase payment sessions disable recording, logging, CAPTCHA solving, and persistent context.
 - Managed execution never automatically retries after `submitted_at`; ambiguous outcomes are visible to the user and agent.
 - OpenClaw receives a sanitized terminal event routed to the originating session without any Browserbase/provider/card secret.

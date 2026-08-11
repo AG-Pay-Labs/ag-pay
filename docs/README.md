@@ -14,7 +14,7 @@ The first release defaults to **supervised autonomy**: every new agent starts wi
 | [HTTP API](./api.md) | Implemented `0.1.0` endpoint inventory, payload examples, and known gaps |
 | [Agent pairing and security](./agent-pairing-and-security.md) | Pairing handshake, agent authentication, authorization, and threat controls |
 | [Payments and compliance](./payments-and-compliance.md) | Card-data boundary, tokenization, business billing data, and future card issuance |
-| [Managed checkout](./managed-checkout.md) | Implemented Browserbase/Stripe worker, security boundary, configuration, and sandbox test procedure |
+| [Managed checkout](./managed-checkout.md) | Implemented Browserbase/Stripe worker, hosted test proof, security boundary, configuration, and sandbox procedures |
 | [Repository and local development](./repository-and-local-development.md) | Multi-repository layout, platform/plugin/playground setup, Docker services, and developer workflow |
 | [Operations](./operations.md) | Configuration, observability, backups, migrations, and incident basics |
 
@@ -34,4 +34,4 @@ The first release defaults to **supervised autonomy**: every new agent starts wi
 
 ## Status
 
-The implemented prototype includes the FastAPI service, a responsive Next.js + shadcn management UI, a durable managed-checkout queue/worker, and the OpenClaw integration. The UI keeps the human bearer token in an HttpOnly same-site cookie and reaches FastAPI through an allowlisted backend-for-frontend route. Managed checkout is deliberately limited to operator-owned adapter definitions and Stripe Issuing references; legacy completion remains available for sandbox compatibility. The API/domain documents distinguish this narrow implementation from production hardening such as signed pairing, provider-hosted card onboarding, webhooks and reconciliation, audited secret management, and issuer-enforced per-purchase virtual-card limits.
+The implemented prototype includes the FastAPI service, a responsive Next.js + shadcn management UI, a durable managed-checkout queue/worker, and the OpenClaw integration. The UI keeps the human bearer token in an HttpOnly same-site cookie and reaches FastAPI through an allowlisted backend-for-frontend route. The configured-merchant rail is deliberately limited to operator-owned adapter definitions and Stripe Issuing references. A distinct development-only `stripe-hosted` proof creates and verifies Stripe test-mode Checkout Sessions from approved facts so Browserbase success/decline and the complete status/notification path can be demonstrated without a local merchant; it is not arbitrary-site purchasing. Legacy completion remains available for sandbox compatibility. The API/domain documents distinguish these narrow implementations from production hardening such as signed pairing, provider-hosted card onboarding, webhooks and reconciliation, audited secret management, and issuer-enforced per-purchase virtual-card limits.

@@ -4,7 +4,8 @@
 
 The `0.1.0` prototype persists `User`, `Agent`, `AgentPaymentPolicy`,
 `PaymentMethod`, `AgentPaymentMethod`, `PurchaseCredential`, `CartItem`,
-`CheckoutExecution`, `CheckoutEvent`, `Purchase`, and `Subscription`.
+`CheckoutExecution`, `CheckoutStatusTransition`, `CheckoutEvent`, `Purchase`,
+and `Subscription`.
 Personal/business billing information is embedded as a validated value object
 on `PaymentMethod`.
 
@@ -29,6 +30,7 @@ erDiagram
     PURCHASE_CREDENTIAL ||--|| CART_ITEM : belongs_to
     PAYMENT_METHOD o|--o{ CART_ITEM : selected_for
     CART_ITEM ||--o| CHECKOUT_EXECUTION : may_queue
+    CHECKOUT_EXECUTION ||--|{ CHECKOUT_STATUS_TRANSITION : records
     CHECKOUT_EXECUTION ||--o| CHECKOUT_EVENT : terminates_with
     CART_ITEM ||--o| PURCHASE : becomes
     CHECKOUT_EVENT o|--o| PURCHASE : may_reference
@@ -172,12 +174,20 @@ The durable, one-per-cart-item managed checkout job and authorization snapshot.
 | Frozen grant | `adapter_key`, `adapter_config`, `approved_amount`, `currency`, `checkout_origin` |
 | Worker state | `status`, `attempt_count`, `lease_expires_at`, `submitted_at` |
 | Safe result | `completed_at`, `error_code`, fixed `error_message`, optional `merchant_order_reference` |
-| Internal correlation | `browserbase_session_id` (never serialized) |
+| Human operations | optional `browserbase_session_id` (human API only) |
 
 `cart_item_id` is unique. Status is `queued`, `running`, `succeeded`, `failed`,
 `action_required`, or `outcome_unknown`. Approval snapshots operator-owned
 adapter selectors and origins so later configuration edits cannot silently
 broaden an already approved grant.
+
+For the development-only `stripe-hosted` adapter, the frozen configuration also
+records `checkout_mode=stripe_hosted_test`. The approved
+`https://checkout.stripe.com/` URL is only a validated bootstrap origin; the
+worker creates and validates the execution-specific `cs_test_...` session after
+approval. Its safe Checkout Session ID can become the human-only merchant order
+reference, while the bound PaymentIntent reference remains internal provider
+evidence.
 
 The current execution model supports one-time purchases only. A cart item with
 a billing period cannot create a managed execution; recurring records remain a
@@ -187,13 +197,28 @@ be verified.
 The lease lets another worker recover a stale pre-submit execution. Once
 `submitted_at` exists, stale recovery terminates as `outcome_unknown`; it never
 replays the merchant submission. `browserbase_session_id` exists only for
-trusted operational correlation and is absent from API serializers and events.
+trusted operational correlation; it is exposed only in the tenant-scoped human
+execution summary and is absent from agent responses and checkout events.
 Executions using the same opaque card reference are additionally serialized by
 a PostgreSQL advisory lock through issuer reconciliation and the terminal
 database commit.
 An `action_required` or `outcome_unknown` sibling quarantines that payment
 method from later managed execution until an operator reconciles and replaces
 or disables it.
+
+### CheckoutStatusTransition
+
+The append-only, human-visible lifecycle history for one checkout execution.
+The approval transaction appends `queued`; every worker claim appends `running`;
+a safe pre-submit retry appends another `queued`; and the outcome transaction
+appends `succeeded`, `failed`, `action_required`, or `outcome_unknown`.
+
+Each row stores a monotonic sequence, its execution ID, status, attempt count,
+optional sanitized error code, and UTC occurrence time. Tenant ownership is
+derived from the foreign-keyed execution rather than duplicated on the row.
+Tenant-scoped human cart reads return the ordered history with fixed safe error
+text. Agent cart responses do not expose this operational history; the separate
+`CheckoutEvent` remains the agent's one-terminal-event feed.
 
 ### CheckoutEvent
 
@@ -262,6 +287,8 @@ There is at most one subscription per purchase. Updating status tracks the platf
   before retrieving a card and immediately before submission.
 - A managed checkout is retried only before `submitted_at`; ambiguous
   post-submit outcomes are never automatically retried.
+- Every managed execution state change is appended transactionally to its
+  tenant-scoped status history.
 - Each managed execution emits at most one durable terminal event.
 - One cart item creates at most one purchase; one purchase creates at most one subscription.
 - Disabling a payment method removes its active assignments but does not erase history.
@@ -303,7 +330,8 @@ or corrective action.
 
 - `IdempotencyRecord`: principal, endpoint, opaque key, canonical request hash, prior response, expiry.
 - `CheckoutAttempt`: immutable per-attempt details and reconciliation evidence;
-  the current execution stores only aggregate attempt count and terminal state.
+  status transitions are now retained, but DOM/provider evidence and detailed
+  per-attempt timings are not.
 - `OutboxEvent`: durable event written in the same transaction as business state, later published to Redis/another broker.
 - `AuditEvent`: append-only actor, action, resource, result, correlation ID, redacted metadata, timestamp.
 - `AgentChallenge`: single-use nonce and public key for proof-of-possession pairing.

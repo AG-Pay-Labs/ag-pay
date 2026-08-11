@@ -10,6 +10,11 @@ make that path production ready. Threat review, PCI/compliance assessment,
 provider controls, secret management, monitoring, backups, and incident
 procedures remain release gates.
 
+The separate `stripe-hosted` proof is hard-gated to `development`/`test`. It
+uses a Stripe test-mode secret and built-in fake-card fixtures to demonstrate
+provider-verified outcomes. Never enable or describe it as a staging/production
+merchant integration.
+
 ## Configuration and secrets
 
 - Validate all required configuration at startup and fail with a clear, redacted error.
@@ -39,6 +44,12 @@ Managed checkout is disabled by default. Its platform-only settings are:
 - worker poll interval, lease duration, pre-submit attempt limit, and result
   timeout.
 
+The hosted proof additionally requires `CHECKOUT_DEMO_ENABLED=true`,
+`CHECKOUT_HOSTED_DEMO_ENABLED=true`, and `STRIPE_DEMO_SECRET_KEY=sk_test_...`.
+It installs a pinned `stripe-hosted` adapter and does not require a
+`CHECKOUT_ADAPTERS` entry, Stripe publishable key, local merchant, tunnel, or
+port `8100`. Those demo flags fail startup outside development/test.
+
 Never copy these provider secrets into the web application or OpenClaw
 playground. Only the checkout worker should receive them from a deployment
 secret manager; the web-facing API process must use a separate environment and
@@ -57,9 +68,11 @@ The web service does not yet have a dedicated readiness route. Deployment health
 
 The prototype publishes a capped, best-effort Redis Stream and logs broker
 failures. Managed checkout additionally writes one durable terminal
-`CheckoutEvent` in PostgreSQL for agent delivery; that table is not a complete
-audit ledger. The structured request logs, metrics, tracing, durable audit,
-dashboards, and alerts below are production requirements, not currently
+`CheckoutEvent` in PostgreSQL for agent delivery and ordered
+`CheckoutStatusTransition` rows for the human lifecycle view. These records do
+not contain full actor, DOM, issuer, or reconciliation evidence and are not a
+complete audit ledger. The structured request logs, metrics, tracing, durable
+audit, dashboards, and alerts below are production requirements, not currently
 complete features.
 
 ### Structured logs

@@ -36,9 +36,13 @@ Browserbase and deterministic Playwright automation without exposing card data
 to OpenClaw or an LLM. Other proposals retain the legacy external-completion
 flow. This narrow integration is not a universal or production-ready payment
 processor.
-For a complete visual sandbox run, a separate development-only Stripe Payments
-rail drives Stripe's official success/decline fixtures through Browserbase and
-the same durable AG Pay/OpenClaw outcome path; see `docs/managed-checkout.md`.
+For a complete visual sandbox run, the development-only `stripe-hosted` rail
+creates a real Stripe test-mode Checkout Session from the approved product
+facts, drives Stripe's official success/decline fixtures through Browserbase,
+verifies the PaymentIntent through Stripe's API, and uses the same durable AG
+Pay/OpenClaw outcome path. It does not order from the supplied product URL or
+claim arbitrary production-merchant support; see
+[Managed checkout](docs/managed-checkout.md).
 
 ### Prerequisites
 
@@ -135,6 +139,15 @@ The local services are then available at:
 - API documentation: `http://127.0.0.1:8000/docs`;
 - API readiness: `http://127.0.0.1:8000/health/ready`; and
 - pgAdmin: `http://127.0.0.1:5050`.
+
+For the Stripe-hosted Browserbase proof, enable `CHECKOUT_ENABLED`,
+`CHECKOUT_DEMO_ENABLED`, and `CHECKOUT_HOSTED_DEMO_ENABLED` in the platform's
+untracked `.env`; provide only a Browserbase API key/project ID and Stripe
+`sk_test_...` key; seed the fake demo methods with `make seed-checkout-demo
+SEED_USERNAME=...`; and keep `make checkout-worker` running. The proof uses
+Stripe's public hosted checkout, so it needs neither a local demo merchant nor
+port `8100`. Follow the exact approval, decline/success, status-panel, and
+OpenClaw verification steps in [Managed checkout](docs/managed-checkout.md#stripe-hosted-browserbase-proof-recommended).
 
 ### OpenClaw playground
 

@@ -125,8 +125,9 @@ The prototype embeds a personal or business billing profile in each payment meth
 
 Create accepts an opaque `provider_payment_method_id`, never a PAN or CVC. The
 prototype fails closed to `provider=prototype-vault` with a `pm_...` reference
-for the legacy test flow, or `provider=stripe_issuing` with an `ic_...`
-reference for managed checkout. Common card fields are `display_name`,
+for legacy and development-only Stripe-hosted test flows, or
+`provider=stripe_issuing` with an `ic_...` reference for configured-merchant
+managed checkout. Common card fields are `display_name`,
 `provider`, `card_brand`, `card_last4`, `expiry_month`, and `expiry_year`.
 
 `billing_details` is a discriminated union.
@@ -260,7 +261,7 @@ currency, and recurrence for an unmanaged proposal. Such a proposal can return
 `approved` with a server-selected active assigned method when the rule permits.
 A proposal containing `checkout` always returns `proposed`, with no selected
 method or execution, regardless of policy. Only the human approval route can
-select its Issuing method and queue it.
+select a supported assigned method and queue it.
 
 `checkout` is optional and both fields are required together. It cannot be
 combined with a non-null `billing_period`. The adapter key
@@ -272,8 +273,21 @@ bare currency symbols are not accepted. When the human approves the item,
 FastAPI creates one `queued` execution in the same
 transaction. The cart response includes a sanitized `execution` summary with
 status, approved amount/currency, attempt count, safe error code/message, and
-timestamps. It never contains a provider card reference, Browserbase session,
-connect URL, card data, or provider secret.
+timestamps. Human cart responses additionally include ordered
+`status_history` entries (`status`, `attempt_count`, safe error code/message,
+and `occurred_at`) plus the safe merchant order reference and Browserbase
+session ID needed for operator inspection. Agent cart responses omit that
+history and those human-only fields. Neither response contains a provider card
+reference, Browserbase connect URL, card data, or provider secret.
+
+When the development-only built-in adapter is enabled, its key is
+`stripe-hosted` and its request bootstrap URL is
+`https://checkout.stripe.com/`. The API still freezes the agent-supplied product
+facts and requires human approval. The worker—not the agent—then creates a new
+Stripe `cs_test_...` Checkout Session containing the exact approved title,
+quantity, amount, currency, and execution metadata and replaces the bootstrap
+URL for that execution. The original `product_url` is retained on the proposal
+but is not treated as a cart/order integration with that merchant.
 
 Successful human purchase responses can include a sanitized
 `merchant_order_reference` for reconciliation. The agent checkout-event feed

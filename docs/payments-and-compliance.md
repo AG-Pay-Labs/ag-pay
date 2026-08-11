@@ -80,7 +80,7 @@ Where the merchant is integrated with the same PSP, the backend can create a pay
 
 ### Implemented narrow path: Browserbase credential injection
 
-The dedicated worker can inject a Stripe Issuing virtual card into a configured merchant form without returning the secret to the language model. It requires provider-owned `agpay_owner_id` metadata to bind the card to the execution tenant, uses deterministic Playwright selectors from an operator-owned adapter snapshot, validates top-level and payment-frame origins, blocks unapproved HTTP and WebSocket egress and service workers, disables Browserbase recording/logging/CAPTCHA solving, and never persists a browser context. Raw number/CVC values live only in a repr-hidden in-memory object between issuer retrieval and form fill. Provider credentials must be injected only into the worker process in deployments; a shared local `.env` is a development convenience, not a production isolation boundary.
+The dedicated worker can inject a Stripe Issuing virtual card into a configured merchant form without returning the secret to the language model. It requires provider-owned `agpay_owner_id` metadata to bind the card to the execution tenant, uses deterministic Playwright selectors from an operator-owned adapter snapshot, validates top-level and payment-frame origins, blocks unapproved HTTP and WebSocket egress and service workers, disables Browserbase recording/logging/CAPTCHA solving, and never persists a browser context. Raw number/CVC values live only in a repr-hidden in-memory object between issuer retrieval and form fill. Provider credentials must be injected only into the worker process in deployments; a shared local `.env` is a development convenience, not a production isolation boundary. The separate built-in `stripe-hosted` development rail hardcodes Browserbase recording and logging on only for public Stripe test-card fixtures; this exception must not be reused for Issuing or real-card execution.
 
 This integration brings the worker and Browserbase relationship into PCI and security scope. Browserbase Live View may still exist even when recording is disabled; access to that account must be tightly restricted and a production launch requires contractual zero-data-retention review. Stripe recommends Issuing Elements where possible and warns that API retrieval of virtual-card details expands PCI obligations. A compromised allowlisted merchant page necessarily sees the values entered into its own payment form, so origin allowlisting and reviewed adapter code—not prompt filtering—are the primary exfiltration controls.
 
@@ -88,6 +88,23 @@ The current adapter binds normalized title, quantity, and exact total, not a
 merchant-issued immutable SKU or variant. Test adapters must therefore use
 unique titles; immutable product/variant binding is a launch gate for non-test
 money.
+
+### Development-only Stripe-hosted proof
+
+The built-in `stripe-hosted` adapter is a test fixture, not a universal merchant
+adapter. After human approval, the worker creates a Stripe test-mode Checkout
+Session whose line item and execution metadata are derived from the frozen AG
+Pay facts. Browserbase fills Stripe's hosted form using billing data already
+saved on the selected fake payment method and one public Stripe test card value
+materialized inside worker memory. Stripe's API must verify the exact bound
+Checkout Session and PaymentIntent before AG Pay records success or decline.
+
+The proposal's `product_url` is not opened by the payment worker, added to a
+source merchant cart, or bound to a source merchant order. A successful fixture
+therefore proves the approval, browser-fill, provider-verification, status, and
+notification loop only. Browserbase is automation infrastructure, not a card
+vault, tokenization provider, merchant integration, or payment-success
+authority.
 
 The worker serializes a card across executions and quarantines it after an
 interactive or ambiguous outcome, preventing a late issuer authorization from
@@ -150,6 +167,11 @@ Do not treat a client response alone as final settlement. A production system ne
 
 ## Prototype rule
 
-Use Stripe test mode and a public sandbox merchant until the provider, Browserbase, issuer, security, legal, and compliance gates are complete. Never paste a real card number into API requests, `.env` files, database seed data, tests, issue trackers, or agent prompts. Even in a live pilot, configure only an opaque `ic_...` reference; the worker retrieves the virtual-card fields directly from Stripe.
+Use Stripe test mode and either the built-in Stripe-hosted proof or a public
+sandbox merchant until the provider, Browserbase, issuer, security, legal, and
+compliance gates are complete. Never paste a real card number into API requests,
+`.env` files, database seed data, tests, issue trackers, or agent prompts. Even
+in a live pilot, configure only an opaque `ic_...` reference; the worker
+retrieves the virtual-card fields directly from Stripe.
 
 The local demo's “Qonto Virtual Card” name, Mastercard brand, expiry, and ending digits are fabricated safe metadata for interface testing. They do not represent a Qonto account, usable card, provider authorization, or endorsement.

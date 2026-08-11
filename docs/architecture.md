@@ -2,7 +2,7 @@
 
 ## Architecture at a glance
 
-The prototype combines a responsive Next.js management application, a modular FastAPI service, and a dedicated checkout worker backed by PostgreSQL and Redis. The Next.js server is a backend-for-frontend (BFF) for human sessions and API calls. PostgreSQL is the durable source of truth for approvals, checkout jobs, terminal agent events, and purchase records. Redis provides agent presence and best-effort domain-event transport. Raw card details are never stored by AG Pay and exist only transiently inside the trusted worker.
+The prototype combines a responsive Next.js management application, a modular FastAPI service, and a dedicated checkout worker backed by PostgreSQL and Redis. The Next.js server is a backend-for-frontend (BFF) for human sessions and API calls. PostgreSQL is the durable source of truth for approvals, checkout jobs, human-visible checkout status histories, terminal agent events, and purchase records. Redis provides agent presence and best-effort domain-event transport. Raw card details are never stored by AG Pay and exist only transiently inside the trusted worker.
 
 ```mermaid
 flowchart LR
@@ -13,19 +13,22 @@ flowchart LR
     API --> R["Redis presence + Streams"]
     API -->|"Durable checkout job"| W["Trusted checkout worker"]
     W -->|"Create privacy-restricted session"| BB["Browserbase"]
-    W -->|"Retrieve Stripe Issuing virtual card just in time"| PSP["Payment provider / issuer"]
-    BB -->|"Deterministic allowlisted checkout"| M["Merchant"]
+    W -->|"Retrieve Issuing card or create/verify test Checkout Session"| PSP["Stripe provider / issuer"]
+    BB -->|"Deterministic allowlisted checkout"| M["Configured merchant / Stripe-hosted test page"]
     PG -->|"Sanitized cursor events"| A
 ```
 
-The prototype is a control plane with one narrow execution adapter, not a card
+The prototype is a control plane with narrow execution adapters, not a card
 vault, acquirer, or universal payment processor. An agent proposes an item and
 optional operator-configured checkout adapter. Every managed proposal waits for
 explicit human approval; per-agent policies can auto-approve only unmanaged
 legacy proposals. Human approval and durable job creation share a database
-transaction. A separate worker can execute only a configured HTTPS merchant
-flow with a Stripe Issuing reference. Proposals without managed checkout retain
-the legacy sandbox/external result path.
+transaction. A separate worker can execute a configured HTTPS merchant flow
+with a Stripe Issuing reference. In development/test only, it can instead
+create a Stripe-hosted test Checkout Session from the frozen product facts and
+drive a built-in fake card fixture through Browserbase. That proof does not
+order from the proposal's source product URL. Proposals without managed
+checkout retain the legacy sandbox/external result path.
 
 ## Goals and tradeoffs
 
@@ -52,7 +55,9 @@ The web application lives at `dev/ag-pay-platform/apps/web`. It uses the Next.js
 - agent creation/pairing, re-pairing, revocation, and payment-method assignment;
 - safe sandbox payment-method entry for personal or business billing profiles;
 - per-agent purchase-review rules with `always` as the default;
-- cart review and approve/cancel decisions, including re-authenticated merchant-credential reveal;
+- cart review and approve/cancel decisions, ordered managed-checkout status
+  timelines, active-session inspection, terminal outcome toasts, and
+  re-authenticated merchant-credential reveal;
 - purchase and locally tracked subscription history.
 
 | Browser route | Management surface |
@@ -113,6 +118,7 @@ Important constraints include:
 - one owner-scoped payment-policy record per agent, with threshold fields constrained to threshold modes;
 - one credential and at most one purchase per cart item;
 - at most one managed checkout execution and one terminal checkout event per cart item;
+- an ordered status-transition history for every managed checkout execution;
 - at most one subscription per purchase;
 - unique provider reference per payment method;
 - restrictive foreign keys for historically attributed agents, cards, cart items, and purchases.
@@ -152,6 +158,15 @@ disabled. A fresh context blocks service workers and WebSockets and routes all
 page, popup, frame, and resource HTTP traffic through the adapter's exact
 origin allowlist. The provider response and CDP connection URL are never
 persisted or logged.
+
+The development-only `stripe-hosted` mode uses the same queue, Browserbase
+boundary, status history, and agent-event path but a different provider
+authority. After approval, the worker creates an idempotent `cs_test_...`
+Checkout Session containing the exact frozen title, quantity, unit amount, and
+currency. It fills saved billing data and one worker-owned Stripe test fixture,
+then polls Stripe for the bound PaymentIntent and maps its verified state to
+`succeeded`, `failed`, `action_required`, or `outcome_unknown`. Neither page
+text nor a success redirect can establish payment success.
 
 The current worker is intentionally an integration boundary, not a production certification. Production still requires:
 
@@ -273,6 +288,13 @@ sequenceDiagram
     OpenClaw->>API: Poll /agent/checkout-events after cursor
     API-->>OpenClaw: Sanitized terminal outcome
 ```
+
+The sequence above depicts the configured-merchant/Issuing rail. In the hosted
+development proof, the worker creates the Stripe test Checkout Session after
+approval, Browserbase submits Stripe's hosted form, and the Stripe Checkout
+Session plus expanded PaymentIntent replace merchant-page success and Issuing
+authorization correlation as the terminal evidence. The remaining PostgreSQL,
+web status, and OpenClaw event steps are identical.
 
 The policy evaluator defaults missing/unknown policy data to review. `always`
 reviews every item; recurrence and threshold modes inspect billing period and

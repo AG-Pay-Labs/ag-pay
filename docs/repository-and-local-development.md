@@ -137,6 +137,22 @@ Open `http://127.0.0.1:3000`. `AGPAY_API_URL` is a server-only setting and defau
 
 The browser uses same-origin auth and proxy routes. Login/registration place the FastAPI JWT in an HttpOnly, same-site cookie. The BFF adds that token to allowlisted human API calls and uses `Cache-Control: no-store`, including for merchant-credential reveal. Agent handshake, heartbeat, proposal, and completion endpoints are intentionally not present in the browser proxy.
 
+## Run the Stripe-hosted checkout proof
+
+In the platform's untracked `.env`, set `CHECKOUT_ENABLED=true`,
+`CHECKOUT_DEMO_ENABLED=true`, and `CHECKOUT_HOSTED_DEMO_ENABLED=true`, then add
+the Browserbase API key/project ID and a Stripe test-mode `sk_test_...` value as
+`STRIPE_DEMO_SECRET_KEY`. Start `make checkout-worker` in a separate platform
+terminal. After creating the human account and agent, run `make
+seed-checkout-demo SEED_USERNAME=...` to add and assign the safe success,
+decline, and 3DS fixture references.
+
+This mode creates a public Stripe test Checkout Session after approval, so it
+does not need the local demo merchant, an HTTPS tunnel, or port `8100`. It tests
+the AG Pay status and OpenClaw outcome loop; it does not create an order at the
+proposal's source product URL. Follow the full procedure and expected evidence
+in [Managed checkout](./managed-checkout.md#stripe-hosted-browserbase-proof-recommended).
+
 ## Run the OpenClaw playground
 
 Keep the API running, then start the independently versioned playground:
