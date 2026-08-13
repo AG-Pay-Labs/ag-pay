@@ -81,11 +81,6 @@ is clearly reported as requiring user input.
 
 - The platform is supervised autonomy in the prototype: an agent proposes and a
   human approves or cancels.
-- Never accept, persist, log, return, or expose raw PAN, CVC, PIN, or 3-D Secure
-  secrets to the API, web app, OpenClaw, an LLM, or ordinary telemetry. Managed
-  checkout may retrieve an active virtual card only in trusted worker memory
-  immediately before deterministic form filling. Payment methods remain
-  provider references plus safe card metadata.
 - Describe managed checkout narrowly and truthfully: production requires an
   explicitly configured merchant adapter plus Stripe Issuing reference; the
   separate Stripe Payments fixture rail is development/test-only.

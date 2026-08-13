@@ -7,14 +7,19 @@ researches a product and submits a cart item. When that item includes a
 server-configured checkout adapter and an HTTPS checkout URL, approval and job
 creation happen in one PostgreSQL transaction.
 
-Two deliberately separate rails are implemented:
+Three deliberately bounded provider/fixture paths are implemented:
 
 - the configured-merchant rail retrieves a tenant-bound Stripe Issuing virtual
   card and submits it through an operator-reviewed merchant adapter; and
 - the development-only `stripe-hosted` proof creates a Stripe **test-mode**
   Checkout Session from the exact approved title, quantity, unit amount, and
   currency, then has Browserbase fill Stripe's hosted page with a selected
-  built-in test fixture.
+  built-in test fixture; or
+- the development/test-only Link path can use a US owner's
+  `stripe_link`/`csmrpd_...` reference with either a configured direct adapter
+  or the built-in hosted proof: it creates a test-mode Link SpendRequest, waits
+  for a separate Link approval, and retrieves a one-time test credential
+  through an owner-scoped Link CLI session.
 
 The hosted proof is the recommended end-to-end demo because Stripe is publicly
 reachable from Browserbase and its API provides an authoritative success or
@@ -55,10 +60,13 @@ For `stripe-hosted`, the worker creates the provider session only after human
 approval. It binds both the Checkout Session and resulting PaymentIntent to the
 execution ID, checks test mode plus exact amount/currency metadata through the
 Stripe API, and treats the provider response—not page copy or a redirect—as the
-terminal authority. A verified decline becomes `failed` with
-`payment_declined`; a verified payment becomes `succeeded` and creates the AG
-Pay purchase record; a required challenge becomes `action_required`; and an
-unverifiable post-submit result becomes `outcome_unknown` without retry.
+terminal authority. With a Link method, the worker first creates a separately
+approved, test-mode SpendRequest from the same frozen facts; Link approval
+releases the test credential but does not establish merchant success. A
+verified decline becomes `failed` with `payment_declined`; a verified payment
+becomes `succeeded` and creates the AG Pay purchase record; a required challenge
+becomes `action_required`; and an unverifiable post-submit result becomes
+`outcome_unknown` without retry.
 
 This is deliberately not a universal arbitrary-site buyer. Only explicit
 adapter keys and origins configured by the platform operator are eligible.
@@ -126,8 +134,9 @@ state changes. This history is shown in AG Pay but is not sent to OpenClaw.
 
 - The database stores `provider=stripe_issuing` and an opaque `ic_...` card ID,
   plus non-sensitive display metadata. It has no PAN or CVC column.
-- Payment-method creation fails closed to the two implemented opaque-reference
-  formats: `stripe_issuing`/`ic_...` and the legacy test-only
+- Payment-method creation fails closed to the implemented opaque-reference
+  formats: `stripe_issuing`/`ic_...`, development-only
+  `stripe_link`/`csmrpd_...`, and the legacy test-only
   `prototype-vault`/`pm_...`. Unknown providers and values resembling PAN or
   CVC data are rejected before persistence.
 - The worker accepts the card only when provider-owned Stripe metadata binds
@@ -140,9 +149,15 @@ state changes. This history is shown in AG Pay but is not sent to OpenClaw.
 - The worker expands the virtual card number and CVC only immediately before
   deterministic form filling. No model or Stagehand call receives them.
 - On the hosted development rail, the database stores only one of the safe
-  `pm_stripe_demo_*` references. The corresponding public Stripe test values
-  are fixed inside the trusted worker and are materialized only for form fill;
-  they are not API, web, OpenClaw, database, or telemetry fields.
+  `pm_stripe_demo_*` references or an opaque `csmrpd_...` Link reference. The
+  corresponding public Stripe or Link test value is materialized only inside
+  the trusted worker for form fill; it is not an API, web, OpenClaw, database,
+  or telemetry field.
+- Link CLI authentication is selected from a worker-only directory by the
+  execution's immutable owner ID. One owner's auth file is never a fallback for
+  another owner. The pinned CLI writes the one-time credential to a private
+  file for direct worker consumption instead of stdout; the worker removes the
+  file after reading it and never logs its contents.
 - Configured-merchant and Issuing payment sessions use `recordSession=false`,
   `logSession=false`, `solveCaptchas=false`, no persistent Browserbase context,
   and an origin allowlist. The built-in development-only `stripe-hosted` rail
@@ -208,6 +223,12 @@ Stripe credentials required by the enabled rail are missing. Invalid or absent
 adapter configuration prevents a new managed request from being approved; an
 already frozen valid execution can still be recovered by the worker.
 
+The optional Stripe Link proof has additional worker-only settings and setup.
+It fails startup outside `development`/`test` or without Link test mode, and
+uses a separately authenticated owner file for each platform owner. Follow
+[Stripe Link agent payments](./stripe-link-agent-payments.md) for the pinned CLI
+version, exact environment, authentication, and end-to-end procedure.
+
 ## Automated verification
 
 The automated suite uses fake browser and issuer boundaries; it never opens a
@@ -250,6 +271,13 @@ This proves the supervised workflow, browser form filling, provider outcome
 detection, durable status history, web notification, and OpenClaw callback. It
 does **not** prove a purchase from the product URL's merchant. A `succeeded`
 result is a Stripe test-mode payment and an AG Pay purchase record only.
+
+The standard procedure below uses fixed public Stripe card fixtures. The
+alternative `stripe_link` hosted proof adds an eligible US Link account and a
+second Link approval, but retains the same Stripe test Checkout
+Session/PaymentIntent as merchant authority. Follow
+[Stripe Link agent payments](./stripe-link-agent-payments.md) for that variant;
+never substitute a live Link credential into this recorded test rail.
 
 ### 1. Create test accounts
 
@@ -609,3 +637,5 @@ model.
 - [Browserbase allowed-domain limitations](https://docs.browserbase.com/platform/browser/security/allowed-domains)
 - [Stripe Issuing virtual cards](https://docs.stripe.com/issuing/cards/virtual)
 - [Stripe Issuing authorization API](https://docs.stripe.com/api/issuing/authorizations/list?lang=python)
+- [Stripe Link CLI](https://github.com/stripe/link-cli)
+- [Stripe Link for agents](https://link.com/agents)

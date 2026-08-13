@@ -12,7 +12,7 @@ For a production integration, “add a card” therefore means:
 4. The client sends only that opaque reference to Agent Wallet.
 5. The backend stores safe metadata: brand, last four digits, expiration, and personal/business billing details. The prototype accepts that safe metadata from the client; a live provider adapter must resolve and verify it server-side.
 
-The web application accepts only an opaque provider reference and safe display metadata; it deliberately has no PAN or CVC field. The managed worker currently recognizes only an explicitly configured `stripe_issuing` reference (`ic_...`) and revalidates it with Stripe at execution time. Sandbox references remain useful for the legacy test flow. The root Docker Compose PostgreSQL instance is never an acceptable card vault.
+The web application accepts only an opaque provider reference and safe display metadata; it deliberately has no PAN or CVC field. The configured-merchant worker recognizes an explicitly configured `stripe_issuing` reference (`ic_...`) and revalidates it with Stripe at execution time. The development-only paths also recognize fixed sandbox references and, when the Link test feature is enabled, a Stripe Link saved-method reference (`csmrpd_...`). A Link reference is usable only through the matching owner's separately authenticated Link CLI session and is never itself treated as a merchant card credential. The root Docker Compose PostgreSQL instance is never an acceptable card vault.
 
 ## Why tokenization is required
 
@@ -64,7 +64,7 @@ A later provider-mediated integration may additionally give a narrowly authorize
 - a short-lived execution/payment authorization from a provider or issuer, if supported;
 - a request-scoped merchant-account credential lease, if required.
 
-A token created merely to store a card with a PSP is usually not a credential accepted by an arbitrary merchant checkout. The implemented managed path therefore supports only Stripe Issuing virtual-card references and server-owned, allowlisted merchant adapters. Unknown merchants or providers fail closed; no generic LLM decides where payment secrets are entered.
+A token created merely to store a card with a PSP is usually not a credential accepted by an arbitrary merchant checkout. The production-shaped managed path therefore supports only Stripe Issuing virtual-card references and server-owned, allowlisted merchant adapters. The separate Stripe Link prototype asks Link to exchange an owner-scoped `csmrpd_...` reference for a test one-time virtual card after an additional Link approval. It fails closed outside development/test and can use either a reviewed direct test adapter or the built-in hosted proof. Unknown merchants or providers fail closed; no generic LLM decides where payment secrets are entered.
 
 ## Production execution strategies
 
@@ -80,7 +80,7 @@ Where the merchant is integrated with the same PSP, the backend can create a pay
 
 ### Implemented narrow path: Browserbase credential injection
 
-The dedicated worker can inject a Stripe Issuing virtual card into a configured merchant form without returning the secret to the language model. It requires provider-owned `agpay_owner_id` metadata to bind the card to the execution tenant, uses deterministic Playwright selectors from an operator-owned adapter snapshot, validates top-level and payment-frame origins, blocks unapproved HTTP and WebSocket egress and service workers, disables Browserbase recording/logging/CAPTCHA solving, and never persists a browser context. Raw number/CVC values live only in a repr-hidden in-memory object between issuer retrieval and form fill. Provider credentials must be injected only into the worker process in deployments; a shared local `.env` is a development convenience, not a production isolation boundary. The separate built-in `stripe-hosted` development rail hardcodes Browserbase recording and logging on only for public Stripe test-card fixtures; this exception must not be reused for Issuing or real-card execution.
+The dedicated worker can inject a Stripe Issuing virtual card into a configured merchant form without returning the secret to the language model. It requires provider-owned `agpay_owner_id` metadata to bind the card to the execution tenant, uses deterministic Playwright selectors from an operator-owned adapter snapshot, validates top-level and payment-frame origins, blocks unapproved HTTP and WebSocket egress and service workers, disables Browserbase recording/logging/CAPTCHA solving, and never persists a browser context. Raw number/CVC values live only in a repr-hidden in-memory object between issuer retrieval and form fill. Provider credentials must be injected only into the worker process in deployments; a shared local `.env` is a development convenience, not a production isolation boundary. The separate built-in `stripe-hosted` development rail hardcodes Browserbase recording and logging on only for public Stripe test-card fixtures, including Link CLI test-mode credentials; this exception must not be reused for Issuing or real-card execution.
 
 This integration brings the worker and Browserbase relationship into PCI and security scope. Browserbase Live View may still exist even when recording is disabled; access to that account must be tightly restricted and a production launch requires contractual zero-data-retention review. Stripe recommends Issuing Elements where possible and warns that API retrieval of virtual-card details expands PCI obligations. A compromised allowlisted merchant page necessarily sees the values entered into its own payment form, so origin allowlisting and reviewed adapter code—not prompt filtering—are the primary exfiltration controls.
 
@@ -105,6 +105,19 @@ therefore proves the approval, browser-fill, provider-verification, status, and
 notification loop only. Browserbase is automation infrastructure, not a card
 vault, tokenization provider, merchant integration, or payment-success
 authority.
+
+The hosted proof can alternatively use `provider=stripe_link` with an opaque
+`csmrpd_...` reference. That path is pinned to a reviewed Link CLI version,
+selects a credential file derived from the immutable AG Pay owner ID inside a
+worker-only directory, and creates a test-mode SpendRequest from the frozen
+merchant, line item, amount, currency, and execution metadata. AG Pay approval
+does not silently stand in for Link consent: the owner must separately approve
+the SpendRequest in Link before the worker retrieves the public test credential
+through a private temporary file. The owner-scoped auth file, temporary card
+file, and CLI output never go to FastAPI, Next.js, OpenClaw, the model, or the
+database. Link currently makes this agent-wallet flow available only to US Link
+accounts. See [Stripe Link agent payments](./stripe-link-agent-payments.md) for
+the complete test procedure.
 
 The worker serializes a card across executions and quarantines it after an
 interactive or ambiguous outcome, preventing a late issuer authorization from
@@ -146,7 +159,7 @@ Automatically approved recurring proposals remain visible in the Approved queue 
 
 ## Webhooks and reconciliation
 
-Provider webhooks are not implemented. The worker correlates the merchant confirmation with a matching Stripe Issuing authorization fetched after submission, but that is not settlement reconciliation. A future webhook endpoint must verify the raw body using the provider's current signature procedure. Processing must be idempotent by provider event ID. Webhook input remains untrusted even after signature verification: validate schemas, tolerate out-of-order events, and reconcile against provider APIs when necessary.
+Provider webhooks are not implemented. The worker correlates configured-merchant confirmation with a matching Stripe Issuing authorization, or verifies the hosted fixture's exact test Checkout Session and PaymentIntent, after submission; neither mechanism is settlement reconciliation. A Link SpendRequest approval authorizes release of a credential and is not evidence that a merchant payment settled. A future webhook endpoint must verify the raw body using the provider's current signature procedure. Processing must be idempotent by provider event ID. Webhook input remains untrusted even after signature verification: validate schemas, tolerate out-of-order events, and reconcile against provider APIs when necessary.
 
 Purchase history can contain both managed, provider-correlated outcomes and legacy agent-reported sandbox completions. A production record must continue to distinguish:
 
@@ -170,8 +183,10 @@ Do not treat a client response alone as final settlement. A production system ne
 Use Stripe test mode and either the built-in Stripe-hosted proof or a public
 sandbox merchant until the provider, Browserbase, issuer, security, legal, and
 compliance gates are complete. Never paste a real card number into API requests,
-`.env` files, database seed data, tests, issue trackers, or agent prompts. Even
-in a live pilot, configure only an opaque `ic_...` reference; the worker
-retrieves the virtual-card fields directly from Stripe.
+`.env` files, database seed data, tests, issue trackers, or agent prompts. The
+Link prototype must keep `STRIPE_LINK_TEST_MODE=true`, use only an opaque
+`csmrpd_...` reference, and require the separate Link approval. Even in an
+Issuing pilot, configure only an opaque `ic_...` reference; the worker retrieves
+the virtual-card fields directly from Stripe.
 
 The local demo's “Qonto Virtual Card” name, Mastercard brand, expiry, and ending digits are fabricated safe metadata for interface testing. They do not represent a Qonto account, usable card, provider authorization, or endorsement.
