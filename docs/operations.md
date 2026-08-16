@@ -11,9 +11,11 @@ provider controls, secret management, monitoring, backups, and incident
 procedures remain release gates.
 
 The separate `stripe-hosted` proof is hard-gated to `development`/`test`. It
-uses a Stripe test-mode secret and built-in fake-card fixtures to demonstrate
-provider-verified outcomes. Never enable or describe it as a staging/production
-merchant integration.
+uses an existing offer-specific Stripe test Checkout Session URL and built-in
+fake-card fixtures. The allowlisted `letyouragentspay.com` landing server—not
+the worker—owns the Stripe test secret and renders a receipt contract only
+after server-side payment verification. Never enable or describe it as a
+staging/production merchant integration.
 
 ## Configuration and secrets
 
@@ -44,16 +46,22 @@ Managed checkout is disabled by default. Its platform-only settings are:
 - worker poll interval, lease duration, pre-submit attempt limit, and result
   timeout.
 
-The hosted proof additionally requires `CHECKOUT_DEMO_ENABLED=true`,
-`CHECKOUT_HOSTED_DEMO_ENABLED=true`, and `STRIPE_DEMO_SECRET_KEY=sk_test_...`.
-It installs a pinned `stripe-hosted` adapter and does not require a
-`CHECKOUT_ADAPTERS` entry, Stripe publishable key, local merchant, tunnel, or
-port `8100`. Those demo flags fail startup outside development/test.
+The hosted proof additionally requires `CHECKOUT_DEMO_ENABLED=true` and
+`CHECKOUT_HOSTED_DEMO_ENABLED=true`. It installs a pinned `stripe-hosted`
+adapter and does not require `STRIPE_DEMO_SECRET_KEY`, a `CHECKOUT_ADAPTERS`
+entry, Stripe publishable key, local merchant, tunnel, or port `8100`. It does
+require a full `https://checkout.stripe.com/c/pay/cs_test_...#...` URL for the
+approved offer; a generic origin is not executable, and one fixed URL maps to
+only one fixed offer. OpenClaw must pass the adapter and matching URL explicitly
+in every managed purchase tool call. The plugin and playground do not own
+checkout defaults. Those demo flags fail startup outside development/test.
 
-Never copy these provider secrets into the web application or OpenClaw
-playground. Only the checkout worker should receive them from a deployment
-secret manager; the web-facing API process must use a separate environment and
-secret mount.
+Never copy provider secrets into the web application or OpenClaw playground.
+Only the worker should receive configured-merchant/Issuing secrets from a
+deployment secret manager; the fixed-URL hosted worker receives no Stripe
+secret. Keep the landing site's Stripe test credential confined to that
+server-side deployment. The web-facing API process must use a separate
+environment and secret mount.
 See [Managed checkout](./managed-checkout.md) for the exact local contract.
 
 ## Health and readiness

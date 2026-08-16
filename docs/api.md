@@ -219,7 +219,7 @@ Managed checkout ignores automatic-approval eligibility and always remains
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| `POST` | `/api/v1/agent/cart-items` | Agent | Propose an item, purchase credential, and optional managed-checkout specification |
+| `POST` | `/api/v1/agent/cart-items` | Agent | Propose an item, purchase credential, and an explicit managed-checkout specification when payment execution is intended |
 | `GET` | `/api/v1/agent/cart-items` | Agent | List the authenticated agent's own items; optional `status` query |
 | `GET` | `/api/v1/agent/cart-items/{cart_item_id}` | Agent | Read one owned proposal and sanitized execution state |
 | `GET` | `/api/v1/agent/checkout-events` | Agent | Read durable terminal checkout events after an integer cursor |
@@ -256,6 +256,14 @@ Managed checkout currently requires `billing_period=null`; recurring proposals
 remain eligible only for the legacy sandbox/external completion path until an
 adapter can verify renewal amount and interval.
 
+For OpenClaw, the `agpay_request_purchase` tool call itself must include both
+`checkout_adapter` and `checkout_url` whenever managed execution is intended.
+The plugin and playground do not infer, inject, or merge a configured checkout
+pair after the call. For the built-in hosted proof, those arguments must be
+`stripe-hosted` and the complete offer-specific
+`https://checkout.stripe.com/c/pay/cs_test_...#...` URL, including its
+fragment.
+
 On creation, FastAPI evaluates the owner-configured policy against total amount,
 currency, and recurrence for an unmanaged proposal. Such a proposal can return
 `approved` with a server-selected active assigned method when the rule permits.
@@ -263,15 +271,25 @@ A proposal containing `checkout` always returns `proposed`, with no selected
 method or execution, regardless of policy. Only the human approval route can
 select a supported assigned method and queue it.
 
+At the FastAPI endpoint, omitting the managed pair creates a legacy item, even
+if the human later clicks **Approve**. The narrower OpenClaw tool rejects such
+an omission before making that API call. Approval of a legacy item can select a
+card and change the item to `approved`, but it creates no `CheckoutExecution`,
+queues no worker job, and charges nothing. The separately gated legacy
+completion endpoint only records an external/sandbox result; it does not
+process a card. Cart items have no endpoint for adding checkout fields later,
+so an existing legacy proposal or approval cannot be upgraded in place. The
+agent must submit a new proposal containing the explicit checkout pair.
+
 `checkout` is optional and both fields are required together. It cannot be
 combined with a non-null `billing_period`. The adapter key
 must exist in operator-owned platform configuration and the checkout URL origin
 must be one of its exact HTTPS origins. The amount must also map exactly to the
 minor-unit exponent of a currency in the worker's explicit Stripe presentment
 set. The configured merchant total element must show that explicit ISO code;
-bare currency symbols are not accepted. When the human approves the item,
-FastAPI creates one `queued` execution in the same
-transaction. The cart response includes a sanitized `execution` summary with
+bare currency symbols are not accepted. When the human approves an item with
+this complete managed specification, FastAPI creates one `queued` execution in
+the same transaction. The cart response includes a sanitized `execution` summary with
 status, approved amount/currency, attempt count, safe error code/message, and
 timestamps. Human cart responses additionally include ordered
 `status_history` entries (`status`, `attempt_count`, safe error code/message,
@@ -281,13 +299,44 @@ history and those human-only fields. Neither response contains a provider card
 reference, Browserbase connect URL, card data, or provider secret.
 
 When the development-only built-in adapter is enabled, its key is
-`stripe-hosted` and its request bootstrap URL is
-`https://checkout.stripe.com/`. The API still freezes the agent-supplied product
-facts and requires human approval. The worker—not the agent—then creates a new
-Stripe `cs_test_...` Checkout Session containing the exact approved title,
-quantity, amount, currency, and execution metadata and replaces the bootstrap
-URL for that execution. The original `product_url` is retained on the proposal
-but is not treated as a cart/order integration with that merchant.
+`stripe-hosted`. Its request URL must be the exact offer-specific full Stripe
+test Checkout Session URL, for example
+`https://checkout.stripe.com/c/pay/cs_test_...#...`; the fragment is part of
+the frozen target, and `https://checkout.stripe.com/` alone is rejected as
+non-executable. The API freezes the agent-supplied product facts and requires
+human approval. The worker opens that existing session rather than creating or
+replacing it, and it needs no Stripe credential. One fixed URL represents only
+one fixed offer. The original `product_url` is retained on the proposal but is
+not treated as a cart/order integration with that merchant.
+
+After submission, the worker accepts success only from the allowlisted
+`letyouragentspay.com` origin when the visible
+`#agpay-payment-verification[data-agpay-payment-status="verified"]` contract
+reports the same `cs_test_...` session/order reference. That contract exposes
+the checked offer, amount, and currency as data attributes and is rendered only
+after the landing server verifies all of those facts with its own Stripe test
+credential; arbitrary page text or a redirect alone cannot create a purchase.
+If that verified success contract does not appear after submission, the fixed
+hosted rail records `outcome_unknown`; it does not infer `payment_declined` or
+`action_required` from the Stripe page and does not retry.
+
+An authenticated owner can reconcile that development-only hosted outcome
+without resubmitting payment:
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| `POST` | `/api/v1/cart-items/{cart_item_id}/checkout/reconcile` | User | Verify and record an existing paid `stripe-hosted` sandbox checkout |
+
+The request has no payment facts or card data in its body. FastAPI derives the
+frozen `cs_test_...` reference and sends it only to the pinned
+`letyouragentspay.com` verification endpoint. Success requires exact
+session/order reference, canonical offer name, minor-unit amount, and currency
+matching. The database transition is idempotent and owner scoped: it creates
+one purchase, changes the cart/execution to purchased/succeeded, appends a
+human status transition and a second durable agent event, and thereby releases
+the quarantined test method. A missing item returns `404`; ineligible or
+unverified state returns `409`; unavailable trusted verification returns `503`.
+No path from this endpoint invokes the worker, Browserbase, or card submission.
 
 Successful human purchase responses can include a sanitized
 `merchant_order_reference` for reconciliation. The agent checkout-event feed
@@ -363,6 +412,7 @@ queued -> running -> succeeded
                   -> failed
                   -> action_required
                   -> outcome_unknown
+outcome_unknown -> succeeded  (verified hosted-sandbox reconciliation only)
 ```
 
 Only `succeeded` transitions the cart item to `purchased`. The other terminal
@@ -403,7 +453,8 @@ Health responses contain only a simple message.
   threshold is not a real spend limit.
 - Signed/proof-of-possession pairing and agent credential rotation.
 - Provider-hosted card onboarding/metadata verification, signed webhooks, and
-  operator reconciliation actions. The current UI accepts opaque references.
+  general production reconciliation. The implemented owner action is narrowly
+  limited to the pinned Stripe-hosted sandbox proof.
 - A general durable outbox and audit log. Checkout terminal events are durable,
   while Redis publication and other business events remain best effort.
 - More reviewed merchant adapters; the implemented executor rejects arbitrary

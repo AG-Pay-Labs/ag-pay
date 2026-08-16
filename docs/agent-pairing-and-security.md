@@ -128,6 +128,14 @@ always `proposed` until that human endpoint approves it. Missing policy data,
 threshold-currency mismatch, and absent active assignments fail safe to
 `proposed`.
 
+For OpenClaw, the purchase tool call must itself supply both
+`checkout_adapter` and `checkout_url` to request managed execution; the plugin
+and playground do not inject defaults, and the tool rejects a missing or
+partial pair before contacting AG Pay. Human approval of an older or direct
+API-created legacy item creates no worker job or payment attempt. Checkout
+fields cannot be added to an existing cart item, so a legacy proposal or
+approval must be replaced with a new managed proposal.
+
 The `never` mode suppresses human review only for an unmanaged legacy proposal.
 It never mints a managed execution, provider authorization, or unlimited
 real-money permission.

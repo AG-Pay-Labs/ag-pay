@@ -27,3 +27,6 @@ venv/
 .DS_Store
 
 .pnpm-store/
+
+tmp
+output

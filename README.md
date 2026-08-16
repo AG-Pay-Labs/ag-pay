@@ -37,12 +37,30 @@ to OpenClaw or an LLM. Other proposals retain the legacy external-completion
 flow. This narrow integration is not a universal or production-ready payment
 processor.
 For a complete visual sandbox run, the development-only `stripe-hosted` rail
-creates a real Stripe test-mode Checkout Session from the approved product
-facts, drives Stripe's official success/decline fixtures through Browserbase,
-verifies the PaymentIntent through Stripe's API, and uses the same durable AG
-Pay/OpenClaw outcome path. It does not order from the supplied product URL or
-claim arbitrary production-merchant support; see
+opens an exact, offer-specific Stripe test Checkout Session URL supplied with
+the proposal, drives Stripe's public test-card fixtures through Browserbase,
+and accepts success only after the allowlisted `letyouragentspay.com` landing
+server has verified the paid session with Stripe. The worker neither creates
+nor polls Stripe sessions and does not need a Stripe secret. This rail uses the
+same durable AG Pay/OpenClaw outcome path, but it does not order from the
+supplied product URL or claim arbitrary production-merchant support; see
 [Managed checkout](docs/managed-checkout.md).
+
+For this development rail only, an authenticated owner can reconcile an
+`outcome_unknown` execution against the landing server's exact, paid-session
+proof. Reconciliation records an already completed payment and releases the
+quarantined test method; it never fills a card, reopens checkout, or submits a
+second payment.
+
+OpenClaw must pass `checkout_adapter=stripe-hosted` and the complete matching
+`cs_test_...#...` URL in every managed purchase tool call. Neither the plugin
+nor the playground supplies checkout defaults. The tool rejects a missing or
+partial pair before contacting AG Pay. Legacy approval-only items may still
+exist from earlier plugin versions or direct API clients; approving one changes
+its control-plane status but queues no worker job and cannot charge the test
+card. Checkout fields are frozen when the proposal is created, so an existing
+legacy proposal or approval cannot be upgraded in place; ask OpenClaw to create
+a new managed proposal.
 
 ### Prerequisites
 
@@ -142,12 +160,16 @@ The local services are then available at:
 
 For the Stripe-hosted Browserbase proof, enable `CHECKOUT_ENABLED`,
 `CHECKOUT_DEMO_ENABLED`, and `CHECKOUT_HOSTED_DEMO_ENABLED` in the platform's
-untracked `.env`; provide only a Browserbase API key/project ID and Stripe
-`sk_test_...` key; seed the fake demo methods with `make seed-checkout-demo
-SEED_USERNAME=...`; and keep `make checkout-worker` running. The proof uses
-Stripe's public hosted checkout, so it needs neither a local demo merchant nor
-port `8100`. Follow the exact approval, decline/success, status-panel, and
-OpenClaw verification steps in [Managed checkout](docs/managed-checkout.md#stripe-hosted-browserbase-proof-recommended).
+untracked `.env` and provide only a Browserbase API key/project ID. Seed the
+fake demo methods with `make seed-checkout-demo SEED_USERNAME=...`, and keep
+`make checkout-worker` running. Every OpenClaw managed purchase tool call must
+explicitly supply `checkout_adapter=stripe-hosted` and the complete
+offer-specific Stripe test Checkout Session URL, including its fragment. The
+worker needs no Stripe secret; the allowlisted landing server owns it and
+verifies the paid session. The proof needs neither a local demo merchant nor
+port `8100`. Follow the exact approval, verified-success, unknown-outcome,
+status-panel, and OpenClaw verification steps in
+[Managed checkout](docs/managed-checkout.md#stripe-hosted-browserbase-proof-recommended).
 
 ### OpenClaw playground
 

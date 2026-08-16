@@ -144,7 +144,10 @@ The total is derived as `unit_price × quantity`. `billing_period` is `monthly`,
 `yearly`, or absent. A human can select only an active payment method currently
 assigned to the originating agent. An unmanaged, policy-eligible item can start
 as `approved` only when the backend finds an active assigned method; otherwise
-it starts as `proposed`. A managed item always starts as `proposed`.
+it starts as `proposed`. A managed item always starts as `proposed`. OpenClaw
+creates a managed item only when the purchase tool call explicitly supplies
+both `checkout_adapter` and `checkout_url`; neither the plugin nor playground
+adds those fields from configuration.
 
 Current state machine:
 
@@ -153,7 +156,7 @@ stateDiagram-v2
     [*] --> proposed: review required or no eligible card
     [*] --> approved: unmanaged policy permits + active assigned card
     [*] --> proposed: managed checkout always requires human approval
-    proposed --> approved: human approves and selects card
+    proposed --> approved: human approves and selects card; managed item also queues job
     proposed --> cancelled: human cancels
     approved --> purchased: worker verifies managed checkout or agent records legacy success
 ```
@@ -161,7 +164,10 @@ stateDiagram-v2
 Rule-approved legacy items and manually approved items share the same persisted
 cart state. If both managed-checkout fields are present, only human approval
 transactionally creates one execution; otherwise the item retains the legacy
-external-completion path.
+external-completion path and approval queues no payment. Checkout fields are
+part of the immutable proposal contract: there is no transition or update that
+converts an existing legacy proposal or approval into a managed item. The agent
+must create a new proposal with the complete checkout specification.
 `cancelled` and `purchased` are terminal cart states.
 
 ### CheckoutExecution
@@ -183,11 +189,16 @@ broaden an already approved grant.
 
 For the development-only `stripe-hosted` adapter, the frozen configuration also
 records `checkout_mode=stripe_hosted_test`. The approved
-`https://checkout.stripe.com/` URL is only a validated bootstrap origin; the
-worker creates and validates the execution-specific `cs_test_...` session after
-approval. Its safe Checkout Session ID can become the human-only merchant order
-reference, while the bound PaymentIntent reference remains internal provider
-evidence.
+URL is the complete offer-specific
+`https://checkout.stripe.com/c/pay/cs_test_...#...` target, including its
+fragment; a generic Stripe origin is not sufficient. The worker extracts and
+freezes the `cs_test_...` session ID, opens that existing session, and requires
+the allowlisted landing verification contract to report the same session/order
+reference. The landing server renders that contract only after verifying the
+offer, amount, currency, complete state, and paid state. The worker neither
+creates the session nor holds a Stripe credential. The safe session ID can
+become the human-only merchant order reference; the landing server's Stripe
+verification remains external provider evidence.
 
 The current execution model supports one-time purchases only. A cart item with
 a billing period cannot create a managed execution; recurring records remain a
@@ -203,8 +214,11 @@ Executions using the same opaque card reference are additionally serialized by
 a PostgreSQL advisory lock through issuer reconciliation and the terminal
 database commit.
 An `action_required` or `outcome_unknown` sibling quarantines that payment
-method from later managed execution until an operator reconciles and replaces
-or disables it.
+method from later managed execution. The hosted sandbox's owner-only
+reconciliation can convert a proven paid `outcome_unknown` execution to
+`succeeded`, create its purchase, and release the method without any payment
+resubmission. Other unknown or interactive outcomes remain quarantined until a
+separate operator/provider resolution.
 
 ### CheckoutStatusTransition
 
@@ -212,6 +226,9 @@ The append-only, human-visible lifecycle history for one checkout execution.
 The approval transaction appends `queued`; every worker claim appends `running`;
 a safe pre-submit retry appends another `queued`; and the outcome transaction
 appends `succeeded`, `failed`, `action_required`, or `outcome_unknown`.
+Verified hosted-sandbox reconciliation may append one later `succeeded`
+transition after `outcome_unknown`; it records evidence resolution rather than
+a second checkout attempt.
 
 Each row stores a monotonic sequence, its execution ID, status, attempt count,
 optional sanitized error code, and UTC occurrence time. Tenant ownership is
@@ -227,14 +244,18 @@ agent integration.
 
 | Field group | Representative fields |
 | --- | --- |
-| Cursor/identity | monotonic `cursor`, unique `event_id`, unique `execution_id` |
+| Cursor/identity | monotonic `cursor`, unique `event_id`, indexed `execution_id` |
 | Scope | `owner_id`, `agent_id`, `cart_item_id`, optional `purchase_id` |
 | Safe result | terminal `status`, `amount`, `currency`, optional `error_code`, `created_at` |
 
-The unique execution reference makes one logical terminal event per execution.
-The agent endpoint scopes by authenticated `agent_id` and orders by cursor.
-No merchant-controlled error string, Browserbase identifier, provider card
-reference, or payment credential is present.
+An execution normally emits one terminal event. A hosted-sandbox execution that
+first emitted `outcome_unknown` emits one later `succeeded` event after verified
+owner reconciliation, so an agent that already consumed the ambiguity learns
+the final result. Purchase uniqueness and the reconciliation transaction make
+that resolution idempotent. The agent endpoint scopes by authenticated
+`agent_id` and orders by cursor. No merchant-controlled error string,
+Browserbase identifier, provider card reference, or payment credential is
+present.
 
 ### Purchase
 

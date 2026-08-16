@@ -13,22 +13,30 @@ flowchart LR
     API --> R["Redis presence + Streams"]
     API -->|"Durable checkout job"| W["Trusted checkout worker"]
     W -->|"Create privacy-restricted session"| BB["Browserbase"]
-    W -->|"Retrieve Issuing card or create/verify test Checkout Session"| PSP["Stripe provider / issuer"]
+    W -->|"Retrieve Issuing card / correlate authorization"| PSP["Stripe provider / issuer"]
     BB -->|"Deterministic allowlisted checkout"| M["Configured merchant / Stripe-hosted test page"]
+    BB -->|"Success redirect"| L["letyouragentspay.com verification landing"]
+    L -->|"Verify test session server-side"| PSP
     PG -->|"Sanitized cursor events"| A
 ```
 
 The prototype is a control plane with narrow execution adapters, not a card
 vault, acquirer, or universal payment processor. An agent proposes an item and
-optional operator-configured checkout adapter. Every managed proposal waits for
-explicit human approval; per-agent policies can auto-approve only unmanaged
-legacy proposals. Human approval and durable job creation share a database
-transaction. A separate worker can execute a configured HTTPS merchant flow
-with a Stripe Issuing reference. In development/test only, it can instead
-create a Stripe-hosted test Checkout Session from the frozen product facts and
-drive a built-in fake card fixture through Browserbase. That proof does not
-order from the proposal's source product URL. Proposals without managed
-checkout retain the legacy sandbox/external result path.
+may explicitly name an operator-configured checkout adapter and URL. Every
+managed proposal waits for explicit human approval; per-agent policies can
+auto-approve only unmanaged legacy proposals. For an OpenClaw managed purchase,
+the tool call must carry both checkout fields; the plugin and playground do not
+add defaults. Only approval of a proposal that already contains that complete
+managed specification creates a durable job in the same database transaction.
+A separate worker can execute a configured HTTPS merchant flow
+with a Stripe Issuing reference. In development/test only, it can instead open
+an offer-specific Stripe test Checkout Session URL supplied with the proposal
+and drive a built-in fake card fixture through Browserbase. The allowlisted
+landing server owns the Stripe credential and renders a verified receipt; the
+worker does not create or poll the session. That proof does not order from the
+proposal's source product URL. Proposals without managed checkout retain the
+legacy sandbox/external result path: approval alone does not queue a worker or
+process payment, and adding checkout fields requires a new proposal.
 
 ## Goals and tradeoffs
 
@@ -99,6 +107,14 @@ receives Browserbase, issuer, card, or merchant-password secrets; it polls a
 PostgreSQL-backed cursor feed and injects only fixed, sanitized outcomes into
 the originating OpenClaw session.
 
+The plugin also does not choose, infer, or inject a checkout adapter or URL.
+Every managed `agpay_request_purchase` call must explicitly include
+`checkout_adapter` and `checkout_url`. For the hosted playground proof, the URL
+is the exact offer-specific `cs_test_...#...` URL, including its fragment. If
+the call omits either field, the plugin rejects it before contacting AG Pay.
+Older or direct API-created records without the pair remain legacy
+approval-only proposals.
+
 The `dev/ag-openclaw-playground` repository is the local integration harness.
 Its Docker build packages the sibling plugin source, installs it into a pinned
 OpenClaw release, keeps tokens in SecretRef-backed storage, and exposes the
@@ -160,13 +176,19 @@ origin allowlist. The provider response and CDP connection URL are never
 persisted or logged.
 
 The development-only `stripe-hosted` mode uses the same queue, Browserbase
-boundary, status history, and agent-event path but a different provider
-authority. After approval, the worker creates an idempotent `cs_test_...`
-Checkout Session containing the exact frozen title, quantity, unit amount, and
-currency. It fills saved billing data and one worker-owned Stripe test fixture,
-then polls Stripe for the bound PaymentIntent and maps its verified state to
-`succeeded`, `failed`, `action_required`, or `outcome_unknown`. Neither page
-text nor a success redirect can establish payment success.
+boundary, status history, and agent-event path but a different verification
+authority. The approved grant contains the full offer-specific
+`https://checkout.stripe.com/c/pay/cs_test_...#...` URL. The worker opens that
+existing session, verifies its displayed offer facts, and fills saved billing
+data plus one worker-owned Stripe test fixture. After Stripe redirects, the
+`letyouragentspay.com` server uses its own test credential to verify complete
+and paid state plus the expected offer, amount, and currency. The worker maps a
+visible, matching verified-only receipt to `succeeded`; a definite pre-submit
+failure can map to `failed`, but every non-success state after submission may
+have occurred—including a visible decline or challenge—maps to
+`outcome_unknown` for manual reconciliation. The worker neither creates nor
+polls a Checkout Session, and arbitrary page text or a redirect alone cannot
+establish payment success. One fixed URL represents only one offer.
 
 The current worker is intentionally an integration boundary, not a production certification. Production still requires:
 
@@ -268,32 +290,41 @@ sequenceDiagram
 
     Agent->>API: POST /agent/cart-items
     API->>DB: Load/lock per-agent policy; calculate total
-    alt Managed checkout or policy requires review or no active assigned card
+    alt Explicit managed adapter and checkout URL
         API->>DB: Store proposed item + encrypted credential
         API-->>Agent: proposed cart item
         User->>API: POST /cart-items/{id}/approve
         API->>DB: Lock item; verify assignment; approve + queue job atomically
+    else Unmanaged policy requires review or no active assigned card
+        API->>DB: Store proposed legacy item + encrypted credential
+        API-->>Agent: proposed cart item
+        User->>API: POST /cart-items/{id}/approve
+        API->>DB: Lock item; select assignment; approve only (no job)
     else Unmanaged rule permits automatic approval and card is available
         API->>DB: Store approved legacy item + selected card
         API-->>Agent: approved cart item
     end
-    Worker->>DB: Lease queued job; revalidate approval and assignment
-    Worker->>Browserbase: Create non-recorded/non-logged session
-    Worker->>Merchant: Verify allowlisted page, product, quantity, and exact total
-    Worker->>Issuer: Retrieve virtual-card fields just in time
-    Worker->>DB: Persist submit boundary
-    Worker->>Merchant: Deterministic fill and final submit
-    Worker->>Issuer: Correlate exact authorization
-    Worker->>DB: Purchase + terminal event atomically
-    OpenClaw->>API: Poll /agent/checkout-events after cursor
-    API-->>OpenClaw: Sanitized terminal outcome
+    opt Managed checkout execution exists
+        Worker->>DB: Lease queued job; revalidate approval and assignment
+        Worker->>Browserbase: Create non-recorded/non-logged session
+        Worker->>Merchant: Verify allowlisted page, product, quantity, and exact total
+        Worker->>Issuer: Retrieve virtual-card fields just in time
+        Worker->>DB: Persist submit boundary
+        Worker->>Merchant: Deterministic fill and final submit
+        Worker->>Issuer: Correlate exact authorization
+        Worker->>DB: Purchase + terminal event atomically
+        OpenClaw->>API: Poll /agent/checkout-events after cursor
+        API-->>OpenClaw: Sanitized terminal outcome
+    end
 ```
 
 The sequence above depicts the configured-merchant/Issuing rail. In the hosted
-development proof, the worker creates the Stripe test Checkout Session after
-approval, Browserbase submits Stripe's hosted form, and the Stripe Checkout
-Session plus expanded PaymentIntent replace merchant-page success and Issuing
-authorization correlation as the terminal evidence. The remaining PostgreSQL,
+development proof, Browserbase opens the already-approved fixed Stripe test
+Checkout URL and submits its hosted form. Stripe redirects to the allowlisted
+landing server, which verifies the session server-side and renders the
+verified-only receipt. The worker requires that receipt to match the frozen
+session/order reference; the landing server has already verified the approved
+offer facts. The remaining PostgreSQL,
 web status, and OpenClaw event steps are identical.
 
 The policy evaluator defaults missing/unknown policy data to review. `always`
@@ -305,7 +336,11 @@ selects one active assigned method. Without one, the item stays `proposed`.
 
 Cancellation is allowed from `proposed`. Human approval selects a specific
 assigned card. Rule-approved legacy items appear in the same Approved queue but
-never create a managed job. Managed checkout rechecks assignment and exact
+never create a managed job. A manually approved legacy item behaves the same:
+the approval is a control-plane decision, not a payment attempt. Checkout data
+is immutable on the cart item, so an existing legacy proposal or approval
+cannot be converted to managed checkout; OpenClaw must submit a new proposal
+with both checkout arguments. Managed checkout rechecks assignment and exact
 amount/currency, and database uniqueness prevents a second execution or
 purchase row.
 

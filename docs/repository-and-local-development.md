@@ -141,17 +141,28 @@ The browser uses same-origin auth and proxy routes. Login/registration place the
 
 In the platform's untracked `.env`, set `CHECKOUT_ENABLED=true`,
 `CHECKOUT_DEMO_ENABLED=true`, and `CHECKOUT_HOSTED_DEMO_ENABLED=true`, then add
-the Browserbase API key/project ID and a Stripe test-mode `sk_test_...` value as
-`STRIPE_DEMO_SECRET_KEY`. Start `make checkout-worker` in a separate platform
-terminal. After creating the human account and agent, run `make
-seed-checkout-demo SEED_USERNAME=...` to add and assign the safe success,
-decline, and 3DS fixture references.
+the Browserbase API key/project ID. Do not set `STRIPE_DEMO_SECRET_KEY` for this
+rail: the `letyouragentspay.com` landing server owns the Stripe test credential
+and server-verifies the redirected session. Start `make checkout-worker` in a
+separate platform terminal. After creating the human account and agent, run
+`make seed-checkout-demo SEED_USERNAME=...` to add and assign the safe success,
+decline, and 3DS fixture references. On the keyless fixed-URL rail, only the
+server-verified success fixture can become `succeeded`; a submitted decline or
+3DS flow becomes `outcome_unknown` for manual reconciliation.
 
-This mode creates a public Stripe test Checkout Session after approval, so it
-does not need the local demo merchant, an HTTPS tunnel, or port `8100`. It tests
-the AG Pay status and OpenClaw outcome loop; it does not create an order at the
-proposal's source product URL. Follow the full procedure and expected evidence
-in [Managed checkout](./managed-checkout.md#stripe-hosted-browserbase-proof-recommended).
+The proposal must supply the exact offer-specific full
+`https://checkout.stripe.com/c/pay/cs_test_...#...` URL, including its
+fragment; the generic Stripe root is not sufficient, and one fixed URL cannot
+represent multiple offers. Pass `checkout_adapter=stripe-hosted` and that URL
+explicitly in every OpenClaw managed purchase tool call; do not configure a
+checkout default in the plugin or playground. The worker opens that existing
+URL after approval and accepts only the matching verified landing receipt. The
+OpenClaw tool rejects a missing or partial pair before contacting AG Pay. Older
+or direct API-created legacy items queue no payment when approved and cannot be
+upgraded; submit a fresh managed request. This mode does not need the local demo
+merchant, an HTTPS tunnel, or port `8100`. It tests the AG Pay status and
+OpenClaw outcome loop; it does not create an order at the proposal's source
+product URL. Follow the full procedure and expected evidence in [Managed checkout](./managed-checkout.md#stripe-hosted-browserbase-proof-recommended).
 
 ## Run the OpenClaw playground
 
@@ -311,7 +322,10 @@ Before merging web changes:
 - bearer tokens never appear in browser storage, client bundles, URLs, logs, or rendered content;
 - the BFF allowlist exposes only intended human operations and clears expired/invalid cookies;
 - card forms contain no PAN/CVC/PIN/3-D Secure fields and communicate the sandbox/token boundary;
-- approval copy distinguishes managed checkout from legacy external completion and never implies broader merchant/provider support than the configured adapter;
+- approval copy distinguishes managed checkout from legacy external completion,
+  states that approving an item without both checkout fields queues no payment,
+  and never implies broader merchant/provider support than the configured
+  adapter;
 - rules copy distinguishes automatic control-plane approval from issuer permission and explains same-currency strict-greater thresholds;
 - desktop and narrow-viewport management journeys receive a browser smoke test.
 

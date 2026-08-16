@@ -8,9 +8,11 @@ uses it in a Stripe test-mode Checkout Session through Browserbase.
 
 The test does not charge the card saved in Link. It proves the AG Pay approval,
 tenant-scoped Link session, one-time credential handoff, browser submission,
-Stripe test PaymentIntent verification, durable status timeline, and purchase
-record. It does not prove arbitrary-merchant compatibility or production
-readiness.
+the allowlisted landing server's paid-session verification, durable status
+timeline, and purchase record. The worker opens an existing offer-specific
+Checkout Session URL; it neither creates nor polls a Stripe session and holds
+no Stripe credential. It does not prove arbitrary-merchant compatibility or
+production readiness.
 
 The integration is pinned to `@stripe/link-cli` `0.12.0`. The worker parses the
 CLI's JSON contract, so upgrading the CLI requires rerunning the automated and
@@ -32,9 +34,16 @@ You need:
 - Node.js `24.15.x` and npm, plus the repository's Python `3.12`, pnpm `11.9.0`,
   Docker with Compose v2, and Make;
 - a Browserbase API key and project ID;
-- a Stripe test-mode secret key (`sk_test_...`) for AG Pay's built-in hosted
-  merchant fixture; and
+- one full test-mode Checkout Session URL for the exact published playground
+  offer being tested; and
 - free local ports `3000`, `5050`, `5432`, `6379`, and `8000`.
+
+The Checkout URL must start with
+`https://checkout.stripe.com/c/pay/cs_test_` and retain its `#...` fragment. A
+generic Stripe root is not executable, and one fixed URL cannot represent more
+than one offer. The `letyouragentspay.com` landing deployment owns the Stripe
+test secret used for server-side receipt verification; do not give it to the
+worker.
 
 Link's `csmrpd_...` value is an opaque saved-payment-method reference. It is
 safe to store as a provider reference, but it is still tenant data and should
@@ -98,7 +107,6 @@ CHECKOUT_DEMO_ENABLED=true
 CHECKOUT_HOSTED_DEMO_ENABLED=true
 BROWSERBASE_API_KEY=your_browserbase_key
 BROWSERBASE_PROJECT_ID=your_browserbase_project_id
-STRIPE_DEMO_SECRET_KEY=sk_test_your_stripe_test_secret
 STRIPE_LINK_ENABLED=true
 STRIPE_LINK_TEST_MODE=true
 STRIPE_LINK_CLI_PATH=link-cli
@@ -108,8 +116,9 @@ STRIPE_LINK_APPROVAL_TIMEOUT_SECONDS=600
 STRIPE_LINK_CLI_TIMEOUT_SECONDS=30
 ```
 
-Never use `sk_live_...` for this proof. The Link auth directory and all Link
-auth files must be readable only by the checkout-worker operating-system user.
+Do not configure a Stripe secret on this worker for the fixed-URL hosted proof.
+The Link auth directory and all Link auth files must be readable only by the
+checkout-worker operating-system user.
 The FastAPI, Next.js, OpenClaw, and model processes must not receive them in a
 deployed environment.
 
@@ -272,11 +281,12 @@ Start a third terminal in the platform repository:
 make checkout-worker
 ```
 
-The worker must see `link-cli` `0.12.0`, the Link settings, Browserbase
-credentials, and `STRIPE_DEMO_SECRET_KEY`. Startup fails closed when required
-settings or the auth directory are invalid. Do not run `make demo-merchant-run`;
-the built-in hosted proof uses Stripe's public test checkout. Run only one
-checkout worker during this local ten-minute approval test.
+The worker must see `link-cli` `0.12.0`, the Link settings, and Browserbase
+credentials. It does not need `STRIPE_DEMO_SECRET_KEY`; startup fails closed
+when required Link settings or the auth directory are invalid. Do not run
+`make demo-merchant-run`; the built-in hosted proof uses the selected fixed
+Stripe test checkout. Run only one checkout worker during this local ten-minute
+approval test.
 
 ## 8. Submit a managed checkout proposal
 
@@ -308,22 +318,26 @@ credential in a private SecretRef; neither credential is sent to the model.
 Run `make smoke` again to verify pairing. Smoke does not initiate or prove a
 purchase.
 
-Configure the plugin's default managed checkout pair as:
+Do not configure a default checkout pair in the plugin or playground. The
+paired agent's `agpay_request_purchase` tool call must explicitly include:
 
 ```text
-adapter: stripe-hosted
-checkout URL: https://checkout.stripe.com/
+checkout_adapter: stripe-hosted
+checkout_url: <FULL_STRIPE_TEST_CHECKOUT_SESSION_URL_FOR_ONE_OFFER>
 ```
 
-Ask the paired agent to request a one-time test purchase with these facts:
+Preserve the URL's fragment. Each call must use the URL for that call's exact
+offer; when testing another playground plan, create a new proposal with that
+plan's URL. Ask the paired agent to request a one-time test purchase using the
+title, amount, and currency encoded by the selected offer:
 
 ```text
-title: AG Pay Link test item
+title: <EXACT_PLAYGROUND_OFFER_TITLE>
 description: Development-only Stripe Link integration test
 merchant: AG Pay Stripe hosted sandbox
 quantity: 1
-unit price: 25.00
-currency: USD
+unit price: <EXACT_OFFER_PRICE>
+currency: <EXACT_OFFER_CURRENCY>
 product URL: an HTTPS evidence URL for the test item
 account email: a test-only merchant-account email
 billing period: omitted
@@ -334,11 +348,18 @@ not supply a real merchant password to the model.
 
 Underneath this safe surface, the plugin calls
 `POST /api/v1/agent/cart-items` with the exact product facts, a generated
-test-only merchant credential, and the configured `stripe-hosted` pair. The
+test-only merchant credential, and the explicit `stripe-hosted` pair from the
+same tool call. The plugin does not add checkout fields from configuration. The
 API derives owner and agent identity from the paired credential, encrypts the
 merchant password, and returns status `proposed`. Do not reproduce this call
 with a pairing or agent token in Swagger or a shell command; pairing is allowed
 only through the hidden `make pair` flow.
+
+The current OpenClaw tool rejects a missing or partial checkout pair before
+contacting AG Pay. Older or direct API-created legacy proposals remain
+approval-only: approving one does not create a worker job, Link SpendRequest,
+or payment attempt. Existing legacy proposals and approvals cannot accept
+checkout fields later; submit a new managed proposal instead.
 
 ## 9. Approve in AG Pay, then approve in Link
 
@@ -346,7 +367,10 @@ This is deliberately a **double-approval** test; neither approval replaces the
 other.
 
 1. In AG Pay, open **Approvals** and inspect the exact merchant, item, quantity,
-   total, currency, product URL, and checkout target.
+   total, currency, product URL, and checkout target. The checkout mode must be
+   managed `stripe-hosted`. If it says **Legacy external completion**, do not
+   approve it expecting a payment; create a new proposal whose OpenClaw tool
+   call includes both explicit checkout arguments.
 2. Select the assigned Stripe Link method and approve the proposal once.
 3. The API atomically creates one queued checkout execution. The worker creates
    a **test-mode** Link SpendRequest bound to the approved merchant, amount,
@@ -354,8 +378,13 @@ other.
 4. Open the Link notification. Recheck the merchant and total, then approve it.
    Link allows 10 minutes for this second approval.
 5. Leave the worker running. It obtains the one-time test credential through a
-   private `0600` file, fills the Stripe test checkout through Browserbase, and
-   verifies the resulting test PaymentIntent through Stripe's API.
+   private `0600` file, opens the already-approved full Stripe Checkout URL,
+   fills it through Browserbase, and follows the success redirect. The
+   `letyouragentspay.com` server verifies complete/paid status plus the offer,
+   amount, and currency with Stripe. The worker accepts only its visible
+   `#agpay-payment-verification[data-agpay-payment-status="verified"]` receipt
+   when the session/order reference matches the `cs_test_...` ID frozen from
+   the approved URL.
 
 Do not approve twice, restart the worker during submission, manually retrieve
 the card, or retry a checkout whose submission may already have happened.
@@ -366,17 +395,18 @@ A successful run provides all of this evidence:
 
 - **Approvals:** the item moves to purchased and its execution timeline reaches
   `succeeded`;
-- **Purchases:** one purchase exists for exactly `USD 25.00`, attributed to the
-  correct agent and payment method;
+- **Purchases:** one purchase exists for the selected offer's exact approved
+  amount and currency, attributed to the correct agent and payment method;
 - **Stripe Dashboard, test mode:** the Checkout Session/PaymentIntent has the
-  approved amount and a successful test status;
+  selected offer amount and a successful test status;
 - **Link:** the SpendRequest was approved in test mode; the underlying saved
   card has no charge; and
 - **worker/API logs:** no PAN, CVC, Link token, Link auth-file contents,
   `csmrpd_...` value, AG Pay bearer token, or Browserbase CDP URL appears.
 
-The hosted fixture verifies Stripe's test PaymentIntent, not an order at the
-proposal's `product_url`. A Browserbase session alone is not payment proof.
+The hosted fixture relies on the landing server's Stripe-verified paid-session
+receipt, not an order at the proposal's `product_url`. A redirect or
+Browserbase session alone is not payment proof.
 
 ## Troubleshooting
 
@@ -413,21 +443,26 @@ adapter. Restart the API and worker after changing `.env`.
 
 ### Browserbase or Stripe test checkout fails
 
-Confirm the Browserbase project/region and the Stripe key's `sk_test_...`
-prefix. The hosted proof needs no local merchant, publishable key, tunnel, or
-port `8100`.
+Confirm the Browserbase project/region, the complete offer-specific
+`cs_test_...` URL including its fragment, and the landing site's server-side
+Stripe test configuration. The worker itself needs no Stripe key, local
+merchant, publishable key, tunnel, or port `8100`.
 
 ### Execution is `action_required`
 
-AG Pay does not let an LLM solve 3-D Secure, CAPTCHA, or another interactive
-challenge. Treat the result as terminal for this execution and reconcile it
-manually.
+On the fixed hosted rail, a challenge observed after browser submission is not
+classified as `action_required`; without the verified success receipt it ends
+as `outcome_unknown`. An `action_required` result can still come from a
+separate pre-submit Link-consent or configured-adapter boundary. AG Pay does not
+let an LLM solve 3-D Secure, CAPTCHA, or another interactive challenge.
 
 ### Execution is `outcome_unknown`
 
-Do not retry. Check the Stripe test PaymentIntent and merchant result first.
-The no-retry rule protects against duplicate submission when a browser or
-provider response is lost after the irreversible boundary.
+Do not retry. Check the Stripe test session in the landing deployment's Stripe
+account and reconcile the landing verification result first. The no-retry rule
+protects against duplicate submission when a browser or verification response
+is lost after the irreversible boundary. A decline, 3DS challenge, timeout, or
+any other non-success hosted result after submission belongs in this state.
 
 ## Stop and disconnect safely
 

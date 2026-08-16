@@ -92,12 +92,32 @@ money.
 ### Development-only Stripe-hosted proof
 
 The built-in `stripe-hosted` adapter is a test fixture, not a universal merchant
-adapter. After human approval, the worker creates a Stripe test-mode Checkout
-Session whose line item and execution metadata are derived from the frozen AG
-Pay facts. Browserbase fills Stripe's hosted form using billing data already
-saved on the selected fake payment method and one public Stripe test card value
-materialized inside worker memory. Stripe's API must verify the exact bound
-Checkout Session and PaymentIntent before AG Pay records success or decline.
+adapter. The proposal supplies the exact, offer-specific full Stripe test
+Checkout Session URL; after human approval, Browserbase opens that existing
+session and fills Stripe's hosted form using billing data already saved on the
+selected fake payment method and one public Stripe test card value materialized
+inside worker memory. The worker has no Stripe credential and does not create
+or poll the session. Instead, the allowlisted `letyouragentspay.com` landing
+server retrieves the redirected session with its own test credential and
+renders a verified-only receipt. The worker requires that receipt's session ID
+and order reference to match the frozen URL before AG Pay records success; the
+landing server has already checked and exposed the offer, amount, and currency
+in that receipt.
+
+Because the worker has no independent provider query on this rail, a submitted
+decline, challenge, timeout, or any other non-success result is
+`outcome_unknown`, not an inferred `failed` or `action_required` state. It
+requires manual reconciliation and must never be retried automatically.
+
+One fixed Checkout URL represents one offer; callers must preserve the full
+`https://checkout.stripe.com/c/pay/cs_test_...#...` URL and must not substitute
+the generic Stripe root or reuse one URL across different plan amounts.
+OpenClaw must supply that URL together with `checkout_adapter=stripe-hosted` in
+the same managed purchase tool call. The plugin and playground do not inject a
+default checkout target; the OpenClaw tool rejects a missing or partial pair
+before contacting AG Pay. Approval of an older or direct API-created legacy
+item is a control-plane decision only: no worker or payment is queued, and a
+new proposal is required to opt into managed checkout.
 
 The proposal's `product_url` is not opened by the payment worker, added to a
 source merchant cart, or bound to a source merchant order. A successful fixture
@@ -123,6 +143,11 @@ The worker serializes a card across executions and quarantines it after an
 interactive or ambiguous outcome, preventing a late issuer authorization from
 being attributed to a later request. Prefer a dedicated one-execution virtual
 card anyway; unrelated external use of the same card is outside AG Pay's lock.
+For the development-only hosted fixture, an authenticated owner may release the
+quarantine only when the pinned landing service independently returns exact
+paid-session proof for the frozen session, offer, amount, and currency. That
+action records the existing purchase and never retries checkout; it is not a
+general issuer or settlement reconciliation mechanism.
 
 ## Approval and recurring payments
 
@@ -159,7 +184,7 @@ Automatically approved recurring proposals remain visible in the Approved queue 
 
 ## Webhooks and reconciliation
 
-Provider webhooks are not implemented. The worker correlates configured-merchant confirmation with a matching Stripe Issuing authorization, or verifies the hosted fixture's exact test Checkout Session and PaymentIntent, after submission; neither mechanism is settlement reconciliation. A Link SpendRequest approval authorizes release of a credential and is not evidence that a merchant payment settled. A future webhook endpoint must verify the raw body using the provider's current signature procedure. Processing must be idempotent by provider event ID. Webhook input remains untrusted even after signature verification: validate schemas, tolerate out-of-order events, and reconcile against provider APIs when necessary.
+Provider webhooks are not implemented. The worker correlates configured-merchant confirmation with a matching Stripe Issuing authorization, or requires the hosted fixture's allowlisted, server-verified paid-session receipt after submission; neither mechanism is settlement reconciliation. The landing server owns the hosted fixture's Stripe credential and verification call. The owner-only hosted reconciliation action queries the same pinned server proof to resolve an already submitted sandbox execution; it does not contact or mutate Stripe from AG Pay. A Link SpendRequest approval authorizes release of a credential and is not evidence that a merchant payment settled. A future webhook endpoint must verify the raw body using the provider's current signature procedure. Processing must be idempotent by provider event ID. Webhook input remains untrusted even after signature verification: validate schemas, tolerate out-of-order events, and reconcile against provider APIs when necessary.
 
 Purchase history can contain both managed, provider-correlated outcomes and legacy agent-reported sandbox completions. A production record must continue to distinguish:
 
