@@ -52,6 +52,35 @@ proof. Reconciliation records an already completed payment and releases the
 quarantined test method; it never fills a card, reopens checkout, or submits a
 second payment.
 
+### Delivery roadmap
+
+AG Pay is advancing through deliberately bounded payment rails:
+
+1. **Stripe Playground — available now for development.** The hosted Stripe
+   test flow demonstrates the complete proposal, human approval, Browserbase
+   form fill, provider-verified receipt, durable outcome, and OpenClaw
+   notification loop. It uses only public Stripe test fixtures and is not a
+   production payment integration.
+2. **Hardened direct form injection — next.** Expand the current narrow
+   configured-merchant/Stripe Issuing worker into reviewed merchant adapters
+   that inject provider-issued, short-lived payment credentials directly into
+   allowlisted checkout forms. Credentials must remain outside the model and
+   control plane, exist only briefly in trusted-worker memory, and never be
+   retried automatically after a possible submission.
+3. **Network-backed payments — planned.** Build provider adapters for Visa and
+   Mastercard agent-commerce capabilities, subject to product access,
+   onboarding, certification, regional availability, and compliance review.
+   The target is provider-hosted card enrollment, authenticated and bounded
+   payment instructions, safe credential delivery, network controls, and
+   durable outcome signals—not storing card details in AG Pay.
+4. **Broader payment ecosystem — later.** Add more issuers, wallets, payment
+   service providers, merchant APIs, and agent ecosystems behind the same
+   provider-neutral safety boundary.
+
+Only the first item and the explicitly documented narrow Stripe Issuing rail
+are implemented today. The remaining items describe direction, not current
+merchant coverage, network approval, endorsement, or production availability.
+
 OpenClaw must pass `checkout_adapter=stripe-hosted` and the complete matching
 `cs_test_...#...` URL in every managed purchase tool call. Neither the plugin
 nor the playground supplies checkout defaults. The tool rejects a missing or

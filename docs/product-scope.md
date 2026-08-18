@@ -276,6 +276,25 @@ can establish success.
 
 ## Production gates and next phases
 
+The delivery sequence is:
+
+1. Retain the implemented Stripe Playground (`stripe-hosted`) as the visual,
+   end-to-end development proof.
+2. Broaden and harden the current narrow configured-merchant/Stripe Issuing
+   path so reviewed adapters can inject provider-issued, short-lived payment
+   credentials directly into allowlisted merchant forms without exposing them
+   to the model or control plane.
+3. Add provider adapters for Visa and Mastercard agent-commerce capabilities,
+   subject to access, onboarding, certification, regional availability, and
+   compliance review. These adapters should use provider-hosted enrollment,
+   authenticated bounded instructions, network controls, and outcome signals;
+   AG Pay must continue to store only opaque references and safe metadata.
+4. Extend the same provider-neutral boundary to additional issuers, wallets,
+   PSPs, merchant APIs, and agent ecosystems.
+
+Steps 2–4 are roadmap work. They do not claim universal merchant coverage,
+network approval or endorsement, or production availability.
+
 Before real autonomous purchasing:
 
 - choose a PSP/issuer and complete its security/compliance onboarding;
@@ -287,4 +306,4 @@ Before real autonomous purchasing:
 - shorten/rotate agent credentials and add signed proof-of-possession pairing;
 - add user recovery, session revocation, step-up authentication, notifications, monitoring, and incident procedures.
 
-Later product work can add organizations and approval chains, merchant/category and cumulative-budget policies, refunds/disputes, accounting integrations, receipt capture, merchant-confirmed subscription cancellation, a mobile client, and the developer SDK.
+Later product work can add organizations and approval chains, merchant/category and cumulative-budget policies, refunds/disputes, accounting integrations, receipt capture, merchant-confirmed subscription cancellation, a mobile client, the developer SDK, and further payment ecosystems after their individual security and compliance gates are satisfied.

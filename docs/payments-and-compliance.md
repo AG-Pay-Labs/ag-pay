@@ -215,3 +215,26 @@ Issuing pilot, configure only an opaque `ic_...` reference; the worker retrieves
 the virtual-card fields directly from Stripe.
 
 The local demo's “Qonto Virtual Card” name, Mastercard brand, expiry, and ending digits are fabricated safe metadata for interface testing. They do not represent a Qonto account, usable card, provider authorization, or endorsement.
+
+## Payment-provider roadmap boundary
+
+The development-only Stripe Playground remains the current end-to-end proof.
+The next execution milestone is a hardened expansion of the narrow
+configured-merchant worker: reviewed adapters may inject a provider-issued,
+short-lived credential directly into an allowlisted payment form, but the
+credential must remain outside FastAPI, PostgreSQL, Redis, OpenClaw, and the
+language model and must exist only briefly in trusted-worker memory.
+
+Planned Visa and Mastercard integrations must preserve the same boundary and
+use each provider's supported enrollment, tokenization, cardholder
+authentication, bounded payment-instruction, authorization-control, and
+outcome-signal mechanisms where available. Neither network is implemented or
+approved today. Product access, contractual onboarding, certification,
+regional availability, PCI scope, privacy, strong-customer-authentication, and
+other compliance requirements remain launch gates for each integration.
+
+Additional issuers, wallets, PSPs, merchant APIs, and agent ecosystems may be
+added later only through reviewed provider adapters. “More ecosystems” must
+never mean accepting raw card data into the control plane, allowing an LLM to
+handle credentials, generating merchant selectors dynamically, or weakening
+the no-retry and `outcome_unknown` rules.

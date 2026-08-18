@@ -36,3 +36,18 @@ The first release defaults to **supervised autonomy**: every new agent starts wi
 ## Status
 
 The implemented prototype includes the FastAPI service, a responsive Next.js + shadcn management UI, a durable managed-checkout queue/worker, and the OpenClaw integration. The UI keeps the human bearer token in an HttpOnly same-site cookie and reaches FastAPI through an allowlisted backend-for-frontend route. The configured-merchant rail is deliberately limited to operator-owned adapter definitions and Stripe Issuing references. A distinct development-only `stripe-hosted` proof opens an exact, offer-specific Stripe test Checkout Session URL supplied explicitly with the proposal, fills it through Browserbase, and accepts success only from a server-verified receipt on the allowlisted `letyouragentspay.com` landing site. Stripe credentials stay on that landing server; the worker does not create or poll a Checkout Session and does not need `STRIPE_DEMO_SECRET_KEY`. A single fixed URL represents one fixed offer, so each OpenClaw managed purchase call must supply the URL matching that offer together with `stripe-hosted`; neither integration layer adds it later. This demonstrates Browserbase success and the complete status/notification path without a local merchant; it is not arbitrary-site purchasing. Legacy completion remains available for sandbox compatibility, but approving a legacy item does not execute payment. The API/domain documents distinguish these narrow implementations from production hardening such as signed pairing, provider-hosted card onboarding, webhooks and reconciliation, audited secret management, and issuer-enforced per-purchase virtual-card limits.
+
+## Delivery roadmap
+
+| Phase | Status | Scope |
+| --- | --- | --- |
+| Stripe Playground | Implemented for development | Supervised Stripe test checkout through Browserbase, with a server-verified receipt and durable AG Pay/OpenClaw outcome |
+| Hardened direct form injection | Next | Reviewed, allowlisted merchant adapters inject provider-issued, short-lived credentials from trusted-worker memory without exposing them to the model or control plane |
+| Visa and Mastercard payment networks | Planned | Provider-hosted enrollment, authenticated bounded payment instructions, safe credential delivery, network controls, and outcome signals, subject to each network's access, onboarding, certification, availability, and compliance requirements |
+| Broader ecosystem | Later | Additional issuers, wallets, PSPs, merchant APIs, and agent platforms through provider-neutral adapters |
+
+The existing configured-merchant worker already proves a deliberately narrow
+Stripe Issuing injection path. The next phase broadens and hardens that model;
+it does not turn arbitrary merchant pages into trusted checkout adapters.
+Visa, Mastercard, and other ecosystem entries are roadmap targets only and do
+not imply current integration, approval, endorsement, or production support.
