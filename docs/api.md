@@ -44,7 +44,8 @@ Owner-scoped lookups generally return `404` for another user's resource to limit
 The CORS configuration reserves the `Idempotency-Key` header, but `0.1.0` does
 not persist or enforce general request idempotency keys. Managed checkout does
 persist a unique execution per cart item, uses database row locks and a worker
-lease, serializes execution per Issuing card with a PostgreSQL advisory lock,
+lease, serializes execution per selected provider/local card reference with a
+PostgreSQL advisory lock,
 and records an irreversible `submitted_at` boundary. A stale execution can be
 claimed again only before card disclosure. Any ambiguous condition after that
 boundary becomes `outcome_unknown` and is never automatically retried.
@@ -120,15 +121,27 @@ The prototype embeds a personal or business billing profile in each payment meth
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
 | `POST` | `/api/v1/payment-methods` | User | Attach provider-tokenized card metadata and billing details |
+| `POST` | `/api/v1/payment-methods/direct-card` | User | Development/test only: encrypt a PAN for the local direct-card research rail |
 | `GET` | `/api/v1/payment-methods` | User | List owned payment methods with safe card metadata |
 | `DELETE` | `/api/v1/payment-methods/{payment_method_id}` | User | Disable the method and remove current agent assignments |
 
-Create accepts an opaque `provider_payment_method_id`, never a PAN or CVC. The
+The normal create route accepts an opaque `provider_payment_method_id`, never a
+PAN or CVC. The
 prototype fails closed to `provider=prototype-vault` with a `pm_...` reference
 for legacy and development-only Stripe-hosted test flows, or
 `provider=stripe_issuing` with an `ic_...` reference for configured-merchant
 managed checkout. Common card fields are `display_name`,
 `provider`, `card_brand`, `card_last4`, `expiry_month`, and `expiry_year`.
+
+The separate direct-card route is disabled by default and unavailable outside
+`development` or `test`. Its body contains `display_name`, `card_number`,
+`expiry_month`, `expiry_year`, and `billing_details`; there is no CVC field. The
+API normalizes spaces/hyphens, requires a 12–19 digit Luhn-valid number and a
+non-expired date, derives best-effort brand/last four, and creates
+`provider=local_direct_card` with an opaque `ldc_...` reference. The PAN is
+Fernet-encrypted in a one-to-one, owner-scoped credential row. Its response is
+the ordinary safe `PaymentMethodRead`; an unfamiliar IIN is labeled `unknown`
+rather than rejected, and PAN/ciphertext is never serialized.
 
 `billing_details` is a discriminated union.
 
@@ -162,12 +175,13 @@ Personal example:
 
 Business details replace `full_name` with `legal_name`, `vat_number`, optional `registration_number`, and `contact_name`; contact email/phone and address remain present.
 
-The create endpoint accepts safe display metadata without contacting a provider.
+The normal create endpoint accepts safe display metadata without contacting a provider.
 For managed Stripe Issuing checkout, the worker retrieves the virtual card and
 requires its brand/last-four/expiry to match plus provider-owned
 `agpay_owner_id` metadata to match the execution owner before using it. Legacy
 references remain presentation/test data. Provider-hosted onboarding is still
-required before production.
+required before production; local encrypted PAN storage is a research-only
+exception, not production onboarding.
 
 ## Agent/payment-method assignments
 
@@ -263,6 +277,17 @@ pair after the call. For the built-in hosted proof, those arguments must be
 `stripe-hosted` and the complete offer-specific
 `https://checkout.stripe.com/c/pay/cs_test_...#...` URL, including its
 fragment.
+
+For `local_direct_card`, the managed adapter must be explicitly configured with
+`checkout_mode=direct`, `payment_form_strategy=browserbase_ai`, exact allowed
+origins, operator-owned product/quantity/total/result selectors, and an order
+reference selector. It must omit payment and submit selectors. Before loading
+PAN or CVC, the worker lets Stagehand observe the empty form, validates each
+returned control against the current allowed DOM/origin, and persists the safe
+resolved selector map on the execution. Stagehand never receives field values
+and never acts. Fixed native JavaScript/Playwright code performs all fills and
+the final click. A visible merchant result and order reference are not issuer
+authorization or settlement proof.
 
 On creation, FastAPI evaluates the owner-configured policy against total amount,
 currency, and recurrence for an unmanaged proposal. Such a proposal can return
@@ -388,6 +413,15 @@ Approve body:
 }
 ```
 
+When the selected method has `provider=local_direct_card`, the same body must
+also include a three- or four-digit `cvc`. CVC is rejected for every other
+provider. FastAPI transfers the accepted value through the authenticated
+worker-owned Unix socket; it is held only in the worker's in-memory, short-TTL,
+one-shot broker and is bound to the execution, owner, and payment method. It is
+never written to PostgreSQL, Redis, a file, an event, or a selector map. Worker
+restart or expiry makes it unavailable. Local direct methods are excluded from
+automatic selection, so this approval is always a human action.
+
 Cancel accepts an optional `note`. Only `proposed` items can currently be
 manually approved or cancelled. Items approved by policy are always unmanaged;
 they appear in the web Approved queue but cannot be cancelled through the
@@ -418,6 +452,13 @@ outcome_unknown -> succeeded  (verified hosted-sandbox reconciliation only)
 Only `succeeded` transitions the cart item to `purchased`. The other terminal
 execution states retain the approved cart record for inspection and
 reconciliation; there is no automatic retry from `outcome_unknown`.
+
+For local direct checkout, a configured decline or action-required marker can
+produce the corresponding terminal state. Success requires both the configured
+merchant success marker and order reference. Any error or ambiguity after the
+pre-fill `submitted_at` boundary becomes `outcome_unknown` and is never
+automatically resubmitted. Even `succeeded` records only merchant-observed
+research evidence, not a matched issuer authorization.
 
 ## Purchases and subscriptions
 
@@ -455,6 +496,10 @@ Health responses contain only a simple message.
 - Provider-hosted card onboarding/metadata verification, signed webhooks, and
   general production reconciliation. The implemented owner action is narrowly
   limited to the pinned Stripe-hosted sandbox proof.
+- Production treatment of the local direct-card research rail. Its encrypted
+  PAN store, approval-time in-memory CVC broker, and observe-only AI form mapper
+  are development/test-only and do not provide issuer reconciliation or
+  universal merchant support.
 - A general durable outbox and audit log. Checkout terminal events are durable,
   while Redis publication and other business events remain best effort.
 - More reviewed merchant adapters; the implemented executor rejects arbitrary

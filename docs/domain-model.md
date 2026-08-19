@@ -3,7 +3,8 @@
 ## Implementation status
 
 The `0.1.0` prototype persists `User`, `Agent`, `AgentPaymentPolicy`,
-`PaymentMethod`, `AgentPaymentMethod`, `PurchaseCredential`, `CartItem`,
+`PaymentMethod`, `StoredCardCredential`, `AgentPaymentMethod`,
+`PurchaseCredential`, `CartItem`,
 `CheckoutExecution`, `CheckoutStatusTransition`, `CheckoutEvent`, `Purchase`,
 and `Subscription`.
 Personal/business billing information is embedded as a validated value object
@@ -25,6 +26,8 @@ erDiagram
     AGENT ||--o| AGENT_PAYMENT_POLICY : controls_review_with
     AGENT ||--o{ AGENT_PAYMENT_METHOD : receives
     PAYMENT_METHOD ||--o{ AGENT_PAYMENT_METHOD : assigned_through
+    USER ||--o{ STORED_CARD_CREDENTIAL : owns
+    PAYMENT_METHOD ||--o| STORED_CARD_CREDENTIAL : may_back
     AGENT ||--o{ PURCHASE_CREDENTIAL : creates
     AGENT ||--o{ CART_ITEM : proposes
     PURCHASE_CREDENTIAL ||--|| CART_ITEM : belongs_to
@@ -87,7 +90,8 @@ The evaluator compares the cart total `unit_price × quantity`, not unit price. 
 
 ### PaymentMethod
 
-A provider-tokenized card reference plus safe display metadata and billing details.
+A provider-tokenized or local opaque card reference plus safe display metadata
+and billing details.
 
 | Field group | Representative fields |
 | --- | --- |
@@ -96,7 +100,12 @@ A provider-tokenized card reference plus safe display metadata and billing detai
 | Safe card metadata | `card_brand`, `card_last4`, `expiry_month`, `expiry_year` |
 | Billing | `billing_profile_type`, `billing_details` JSON |
 
-Status is `active` or `disabled`. The unique `(owner_id, provider, provider_payment_method_id)` constraint prevents duplicate attachment for one user. No PAN or CVC columns exist.
+Status is `active` or `disabled`. The unique `(owner_id, provider,
+provider_payment_method_id)` constraint prevents duplicate attachment for one
+user. `PaymentMethod` itself has no PAN or CVC column. For the disabled-by-
+default local research rail it stores `provider=local_direct_card` and an
+opaque `ldc_...` value; list/read responses remain identical safe metadata.
+Disabling a local method also deletes its encrypted credential row.
 
 `billing_profile_type` is `personal` or `business`. The validated details contain:
 
@@ -104,6 +113,22 @@ Status is `active` or `disabled`. The unique `(owner_id, provider, provider_paym
 - business: legal name, VAT number, optional registration number, contact name/email/phone, and address.
 
 Country is an ISO alpha-2 code. VAT normalization and external verification are not implemented yet. Storing billing details as JSON accelerates the prototype but separate profile/address tables may be preferable when profiles become reusable or country validation expands.
+
+### StoredCardCredential
+
+The one-to-one local direct-card credential behind a `PaymentMethod`.
+
+| Field | Meaning |
+| --- | --- |
+| `payment_method_id`, `owner_id` | Payment-method identity plus explicit tenant scope |
+| `encrypted_pan` | Fernet ciphertext produced with the dedicated direct-card key |
+| `created_at`, `updated_at` | UTC timestamps |
+
+Only the development/test direct-card enrollment route creates this row. The
+worker retrieves it by both owner and payment-method ID and decrypts PAN just in
+time. No CVC field exists here or in any other durable model. Approval-time CVC
+is a TTL-bound, one-shot worker-memory value and is deliberately absent from
+PostgreSQL and Redis.
 
 ### AgentPaymentMethod
 
@@ -178,6 +203,7 @@ The durable, one-per-cart-item managed checkout job and authorization snapshot.
 | --- | --- |
 | Attribution | `id`, `owner_id`, `agent_id`, `cart_item_id`, `payment_method_id` |
 | Frozen grant | `adapter_key`, `adapter_config`, `approved_amount`, `currency`, `checkout_origin` |
+| Resolved form | optional `resolved_form_config` JSON containing validated selectors only |
 | Worker state | `status`, `attempt_count`, `lease_expires_at`, `submitted_at` |
 | Safe result | `completed_at`, `error_code`, fixed `error_message`, optional `merchant_order_reference` |
 | Human operations | optional `browserbase_session_id` (human API only) |
@@ -186,6 +212,15 @@ The durable, one-per-cart-item managed checkout job and authorization snapshot.
 `action_required`, or `outcome_unknown`. Approval snapshots operator-owned
 adapter selectors and origins so later configuration edits cannot silently
 broaden an already approved grant.
+
+For a local direct execution, the frozen adapter must use `checkout_mode=direct`
+and `payment_form_strategy=browserbase_ai`. Stagehand observes the empty form
+before secrets are loaded and returns candidate payment/billing/submit controls;
+the worker validates exact visible matches and allowed frame origins, then
+stores only that safe map in `resolved_form_config`. The effective strategy is
+frozen as resolved. PAN, CVC, merchant HTML, and model output beyond validated
+selectors are not stored there. Fixed JavaScript/Playwright performs every
+field mutation and click; the model cannot act or submit.
 
 For the development-only `stripe-hosted` adapter, the frozen configuration also
 records `checkout_mode=stripe_hosted_test`. The approved
@@ -210,9 +245,9 @@ The lease lets another worker recover a stale pre-submit execution. Once
 replays the merchant submission. `browserbase_session_id` exists only for
 trusted operational correlation; it is exposed only in the tenant-scoped human
 execution summary and is absent from agent responses and checkout events.
-Executions using the same opaque card reference are additionally serialized by
-a PostgreSQL advisory lock through issuer reconciliation and the terminal
-database commit.
+Executions using the same provider/local card reference are additionally
+serialized by a PostgreSQL advisory lock through result processing and the
+terminal database commit.
 An `action_required` or `outcome_unknown` sibling quarantines that payment
 method from later managed execution. The hosted sandbox's owner-only
 reconciliation can convert a proven paid `outcome_unknown` execution to
@@ -298,6 +333,11 @@ There is at most one subscription per purchase. Updating status tracks the platf
 - Missing policy data, invalid threshold data, and threshold-currency mismatch require review.
 - Automatic approval requires an active assigned payment method; without one the item remains proposed.
 - Only an active assigned method can approve or execute a cart item.
+- A local direct method is never selected by automatic approval; it requires a
+  human-managed proposal approval with a fresh CVC.
+- Stored direct-card PAN is encrypted and tenant scoped. CVC is never durable,
+  is bound to one execution/owner/method in worker memory, and is consumed once
+  within its TTL.
 - Only the originating agent can record a legacy completion; managed completion
   belongs exclusively to the trusted worker.
 - Final amount and currency must exactly equal the proposal.
@@ -306,6 +346,8 @@ There is at most one subscription per purchase. Updating status tracks the platf
 - A worker revalidates tenant, agent, assignment, method state, adapter, URL,
   and the merchant-displayed product title, quantity, amount, and currency
   before retrieving a card and immediately before submission.
+- Local direct form analysis is observe-only and completes before PAN/CVC
+  retrieval; only validated selectors reach deterministic injection code.
 - A managed checkout is retried only before `submitted_at`; ambiguous
   post-submit outcomes are never automatically retried.
 - Every managed execution state change is appended transactionally to its
@@ -335,7 +377,7 @@ stateDiagram-v2
     [*] --> queued: approval commits execution
     queued --> running: worker claims lease
     running --> queued: retryable pre-submit failure
-    running --> succeeded: merchant success + provider authorization
+    running --> succeeded: rail-specific result proof accepted
     running --> failed: safe terminal failure or retry limit
     running --> action_required: challenge or user interaction
     running --> outcome_unknown: post-submit outcome cannot be proven
@@ -346,6 +388,13 @@ stateDiagram-v2
 can double charge the user. It has no automated outgoing transition. An
 operator must reconcile merchant and issuer records before any separate retry
 or corrective action.
+
+For configured Stripe Issuing, success includes a matched issuer
+authorization. For `local_direct_card`, success means only that the configured
+merchant success marker and order reference were observed; it is not issuer
+authorization, settlement, or clearing evidence. Both rails record
+`submitted_at` before the first secret-field mutation and forbid automatic
+post-boundary resubmission.
 
 ## Target supporting entities
 

@@ -17,6 +17,13 @@ the worker—owns the Stripe test secret and renders a receipt contract only
 after server-side payment verification. Never enable or describe it as a
 staging/production merchant integration.
 
+The separate `local_direct_card` rail is also hard-gated to
+`development`/`test` and disabled by default. It stores owner-scoped encrypted
+PAN, accepts CVC only with a human approval, and executes only an explicit
+operator-configured direct adapter. It is a controlled research facility, not
+a universal checkout, issuer integration, production card vault, or production
+deployment option.
+
 ## Configuration and secrets
 
 - Validate all required configuration at startup and fail with a clear, redacted error.
@@ -46,6 +53,28 @@ Managed checkout is disabled by default. Its platform-only settings are:
 - worker poll interval, lease duration, pre-submit attempt limit, and result
   timeout.
 
+The local direct research rail additionally requires:
+
+- `LOCAL_DIRECT_CARD_ENABLED=true` and a valid dedicated Fernet
+  `DIRECT_CARD_ENCRYPTION_KEY` shared only by the API enrollment path and worker
+  decryption path;
+- an independent `LOCAL_DIRECT_CARD_BROKER_TOKEN` of at least 32 characters,
+  `LOCAL_DIRECT_CARD_SOCKET_PATH` (normally
+  `/tmp/agpay-direct-card/cvc.sock`), CVC TTL, and socket timeout;
+- `CHECKOUT_FORM_ANALYSIS_MODEL`, a bounded
+  `CHECKOUT_FORM_ANALYSIS_TIMEOUT_SECONDS`, and worker-only Browserbase
+  credentials; and
+- at least one adapter with `checkout_mode=direct`,
+  `payment_form_strategy=browserbase_ai`, exact origins, operator-owned
+  product/result selectors, and an order-reference selector.
+
+The worker creates and owns a private (0700-style) socket parent and a private
+(0600-style) socket. Start it before a direct-card approval. The API sends CVC
+over that authenticated local socket and the worker holds it only in memory,
+bound to execution/owner/method, until one take or TTL expiry. Do not redirect
+this handoff to PostgreSQL, the append-only Redis instance, a volume, or a log.
+Worker restart intentionally destroys all staged CVC values.
+
 The hosted proof additionally requires `CHECKOUT_DEMO_ENABLED=true` and
 `CHECKOUT_HOSTED_DEMO_ENABLED=true`. It installs a pinned `stripe-hosted`
 adapter and does not require `STRIPE_DEMO_SECRET_KEY`, a `CHECKOUT_ADAPTERS`
@@ -67,6 +96,12 @@ See [Managed checkout](./managed-checkout.md) for the exact local contract.
 ## Health and readiness
 
 `/health/live` proves only that the process event loop responds. In `0.1.0`, `/health/ready` executes a PostgreSQL query and Redis `PING`; either dependency failing returns `503`. It does not currently check Alembic schema compatibility.
+
+Readiness also does not prove that the checkout worker owns a usable CVC socket
+or that Browserbase/Stagehand can analyze a configured merchant. A direct-card
+approval returns a safe service-unavailable error when the broker cannot stage
+the one-time value; operators should test this dependency separately without
+logging CVC.
 
 Do not expose configuration values, hostnames, stack traces, dependency versions, or credentials through health endpoints.
 
@@ -91,6 +126,12 @@ Security/business events should include pairing created/exchanged/failed, creden
 
 Next.js access and error logs must also redact cookies, authorization headers, request bodies, platform passwords, merchant credentials, pairing tokens, and provider references. Log route templates and correlation IDs rather than full resource URLs where practical.
 
+For direct-card routes and jobs, redact PAN, encrypted PAN, CVC, broker tokens,
+socket payloads, Stagehand responses, merchant HTML, and browser/CDP messages.
+Safe selector names may be inspected only through the tenant-scoped execution
+snapshot; they must never be combined with field values in telemetry. The
+observe-only model must receive no card or billing values.
+
 ### Metrics
 
 Track at minimum:
@@ -105,6 +146,8 @@ Track at minimum:
 - purchase begin/completion/failure counts;
 - managed executions by safe state, pre-submit retries, expired leases,
   `action_required`, and `outcome_unknown` reconciliation backlog;
+- aggregate direct-card broker put/take/expiry/failure and form-analysis
+  failure counts, without execution, owner, card, selector, or credential labels;
 - webhook verification failures and reconciliation backlog.
 
 Metrics labels must not contain usernames, URLs, merchant-account emails, tokens, or unbounded resource IDs.
@@ -126,6 +169,10 @@ Application audit logs do not replace provider settlement records or a financial
 - Define recovery point and recovery time objectives before launch.
 - Test restoration regularly; an untested backup is not a recovery plan.
 - Redis is not backed up as the business system of record. Reconstruct queues/locks from PostgreSQL state where possible.
+- A PostgreSQL backup includes encrypted local PAN but never CVC. Protect the
+  separate direct-card key independently, test restoration without printing
+  plaintext, and document whether loss of the key makes research credentials
+  intentionally unrecoverable.
 - Preserve migration versions and application artifacts needed to restore a compatible release.
 
 ## Database operations
@@ -148,6 +195,8 @@ Initial actionable alerts should cover:
 - duplicate/conflicting execution attempts;
 - managed executions stuck in `running` beyond their lease or any unexpected
   replay after `submitted_at`;
+- repeated local CVC-broker unavailability, socket permission drift, CVC
+  expiry, or observe-only form-analysis failure;
 - backup or restore-verification failure;
 - abnormal rate of secret reveal or agent revocation;
 - unexpected automatic-approval volume, repeated no-card fallback, or a spike in agents using `never` review.
@@ -167,9 +216,22 @@ For suspected credential or payment compromise:
 7. Communicate with users and regulators according to the incident and applicable obligations.
 8. Document causes and corrective actions after containment.
 
+For the local research rail, disabling `LOCAL_DIRECT_CARD_ENABLED` stops new
+enrollment/approval. Treat compromise of the direct-card encryption key or
+worker boundary as exposure of all corresponding stored PAN ciphertext; rotate
+the broker token independently. Do not attempt to recover CVC from Redis,
+backups, or logs because it must not exist there.
+
 ## Data lifecycle
 
-Before real users, define deletion and retention behavior for platform accounts, embedded billing details, purchase credentials, purchase records, subscriptions, and future audit events. User-facing deletion may need to retain limited financial records for legal reasons; retained records should be minimized and access restricted. Removing a payment method or agent must immediately stop future use even when historical references remain.
+Before real users, define deletion and retention behavior for platform accounts,
+embedded billing details, purchase credentials, encrypted local PAN rows,
+purchase records, subscriptions, and future audit events. User-facing deletion
+may need to retain limited financial records for legal reasons; retained records
+should be minimized and access restricted. Removing a payment method or agent
+must immediately stop future use even when historical references remain. CVC
+has no retention policy because it is never durable and expires from worker
+memory.
 
 ## Deployment checklist
 
@@ -182,13 +244,18 @@ Before real users, define deletion and retention behavior for platform accounts,
 - Provider webhook verification uses the deployed endpoint secret.
 - Rollback or forward-fix steps are documented.
 - Real payments remain disabled unless provider, issuer, security, and compliance gates are complete.
+- `LOCAL_DIRECT_CARD_ENABLED` is false in staging and production; no production
+  deployment treats merchant-observed direct-card success as issuer evidence.
 - Managed checkout runs as a separate worker deployment with the same schema
   version as the API, least-privilege network access, and no request-body or
   browser tracing.
 - Browserbase session creation disables recording, session logging, and CAPTCHA
   solving; account access and Live View are restricted and audited.
 - Every enabled adapter has reviewed exact merchant/payment origins and
-  deterministic selectors. Wildcards and model-provided selectors are absent.
+  deterministic product/result selectors; wildcards are absent. In the local
+  research rail only, Stagehand may observe empty payment/billing controls, but
+  cannot act or see secrets; the worker validates/fixes its selector map before
+  deterministic JavaScript/Playwright injection.
 - An `outcome_unknown` reconciliation runbook and responsible operator exist;
   there is no automatic retry from that state.
 - The Next.js `AGPAY_API_URL` resolves to the intended FastAPI deployment and is not bundled into client-visible configuration.

@@ -312,7 +312,11 @@ Before merging API changes:
 - concurrent cart approval/cancel/completion behavior is tested;
 - card assignment and disable/revoke edge cases pass;
 - policy tenant isolation, default `always`, strict-greater totals, recurrence modes, currency mismatch, and no-active-card fallback pass;
-- no raw PAN, CVC, bearer token, pairing token, or merchant password appears in logs/fixtures;
+- no live PAN/CVC appears in tests, logs, or durable fixture data; direct-card
+  boundary tests use only synthetic values and assert that plaintext is absent
+  from responses, events, logs, and PostgreSQL;
+- bearer tokens, pairing tokens, and merchant passwords do not appear in
+  logs/fixtures;
 - dependency/container findings are reviewed.
 
 Before merging web changes:
@@ -321,7 +325,9 @@ Before merging web changes:
 - protected screens redirect when no valid session is present;
 - bearer tokens never appear in browser storage, client bundles, URLs, logs, or rendered content;
 - the BFF allowlist exposes only intended human operations and clears expired/invalid cookies;
-- card forms contain no PAN/CVC/PIN/3-D Secure fields and communicate the sandbox/token boundary;
+- normal provider forms contain no PAN/CVC fields; the local research form keeps
+  PAN out of React/query state and the managed-approval form collects CVC only
+  for a selected direct card; no form accepts PIN or 3-D Secure secrets;
 - approval copy distinguishes managed checkout from legacy external completion,
   states that approving an item without both checkout fields queues no payment,
   and never implies broader merchant/provider support than the configured

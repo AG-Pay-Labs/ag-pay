@@ -6,7 +6,7 @@
 
 [![Status: Prototype](https://img.shields.io/badge/status-prototype-F59E0B?style=flat-square)](#what-we-are-building)
 [![Autonomy: Human Supervised](https://img.shields.io/badge/autonomy-human_supervised-7C3AED?style=flat-square)](#what-we-are-building)
-[![Security: No Raw Card Data](https://img.shields.io/badge/security-no_raw_card_data-0891B2?style=flat-square)](#what-we-are-building)
+[![Security: Secrets Excluded From Models](https://img.shields.io/badge/security-secrets_excluded_from_models-0891B2?style=flat-square)](#what-we-are-building)
 [![Contributions Welcome](https://img.shields.io/badge/contributions-welcome-16A34A?style=flat-square)](#help-build-the-payment-layer-for-agents)
 
 ![AI agents purchasing goods and digital services through AG Pay](assets/ag-pay-agent-commerce.png)
@@ -46,6 +46,16 @@ same durable AG Pay/OpenClaw outcome path, but it does not order from the
 supplied product URL or claim arbitrary production-merchant support; see
 [Managed checkout](docs/managed-checkout.md).
 
+For controlled local research, the disabled-by-default `local_direct_card`
+rail can store an owner-scoped encrypted PAN and accept CVC only with human
+approval of one explicit managed checkout. CVC is handed over a private Unix
+socket, held only in worker memory under a short TTL, and consumed once. Before
+secrets are loaded, Stagehand observes the empty form to propose selectors;
+the worker validates/fixes them, while deterministic JavaScript/Playwright
+performs every fill and click. The model never receives values or acts. A
+merchant success marker/order reference is not issuer authorization, and this
+development/test rail is neither universal nor production ready.
+
 For this development rail only, an authenticated owner can reconcile an
 `outcome_unknown` execution against the landing server's exact, paid-session
 proof. Reconciliation records an already completed payment and releases the
@@ -61,25 +71,30 @@ AG Pay is advancing through deliberately bounded payment rails:
    form fill, provider-verified receipt, durable outcome, and OpenClaw
    notification loop. It uses only public Stripe test fixtures and is not a
    production payment integration.
-2. **Hardened direct form injection — next.** Expand the current narrow
+2. **Local direct-card research — available only for development/test.** The
+   feature-gated experiment demonstrates encrypted PAN at rest, approval-time
+   worker-memory CVC, observe-only form mapping, and deterministic injection
+   against an explicit adapter. Merchant-page evidence is not issuer proof.
+3. **Hardened direct form injection — next.** Expand the current narrow
    configured-merchant/Stripe Issuing worker into reviewed merchant adapters
    that inject provider-issued, short-lived payment credentials directly into
    allowlisted checkout forms. Credentials must remain outside the model and
    control plane, exist only briefly in trusted-worker memory, and never be
    retried automatically after a possible submission.
-3. **Network-backed payments — planned.** Build provider adapters for Visa and
+4. **Network-backed payments — planned.** Build provider adapters for Visa and
    Mastercard agent-commerce capabilities, subject to product access,
    onboarding, certification, regional availability, and compliance review.
    The target is provider-hosted card enrollment, authenticated and bounded
    payment instructions, safe credential delivery, network controls, and
    durable outcome signals—not storing card details in AG Pay.
-4. **Broader payment ecosystem — later.** Add more issuers, wallets, payment
+5. **Broader payment ecosystem — later.** Add more issuers, wallets, payment
    service providers, merchant APIs, and agent ecosystems behind the same
    provider-neutral safety boundary.
 
-Only the first item and the explicitly documented narrow Stripe Issuing rail
-are implemented today. The remaining items describe direction, not current
-merchant coverage, network approval, endorsement, or production availability.
+Only the first two research items and the explicitly documented narrow Stripe
+Issuing rail are implemented today. The remaining items describe direction,
+not current merchant coverage, network approval, endorsement, or production
+availability.
 
 OpenClaw must pass `checkout_adapter=stripe-hosted` and the complete matching
 `cs_test_...#...` URL in every managed purchase tool call. Neither the plugin
@@ -280,16 +295,20 @@ AG Pay is exploring a control layer where:
   remains attributable;
 - humans can review proposals, approve or cancel them, and inspect purchase and
   subscription history in one place; and
-- payment credentials stay behind provider boundaries, represented inside AG
-  Pay only by safe references and non-sensitive metadata.
+- production payment credentials stay behind provider boundaries and are
+  represented by safe references; the local research exception stores only
+  tenant-scoped encrypted PAN and never durable CVC.
 
 The current prototype deliberately starts with **supervised autonomy**. An agent
 proposes a purchase and a human approves or cancels it. Configurable rules can
 change how a proposal moves through AG Pay. A narrowly scoped managed path can
 then execute an allowlisted checkout through Browserbase and Stripe Issuing;
-the provider reference stays in AG Pay and raw payment fields exist only in the
-trusted worker's memory. Unsupported merchants and payment providers remain on
-the legacy external-result path. Broader live use still requires merchant
+the provider reference stays in AG Pay and expanded fields exist only in the
+trusted worker's memory. The local research rail may instead decrypt stored PAN
+and consume approval-time CVC in that worker after observe-only mapping, with
+deterministic injection and no issuer-outcome claim. Unsupported merchants and
+payment providers remain on the legacy external-result path. Broader live use
+still requires merchant
 adapters, issuer controls, reconciliation, compliance review, and production
 security hardening.
 

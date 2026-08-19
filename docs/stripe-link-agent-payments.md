@@ -265,7 +265,9 @@ and confirm that it completes before debugging AG Pay.
    - the cardholder name and billing address exactly as saved for that card in
      Link, including region, postal code, country, and an empty versus populated
      second address line.
-3. Never enter the saved card's PAN or CVC. AG Pay has no fields for them.
+3. Never enter the saved card's PAN or CVC. The Stripe Link attachment flow has
+   no fields for them; it is separate from the feature-gated local direct-card
+   research rail.
 4. Open the agent's detail page and assign the new Stripe Link method to that
    agent.
 

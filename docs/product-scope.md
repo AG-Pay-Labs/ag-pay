@@ -2,9 +2,26 @@
 
 ## Product statement
 
-AG Pay is an agent-wallet control plane for purchases initiated by AI agents. A person connects OpenClaw-like agents, adds tokenized payment methods with personal or business billing information, assigns allowed cards to agents, configures when each agent needs human review, and retains an attributable history of proposals, purchases, and subscriptions.
+AG Pay is an agent-wallet control plane for purchases initiated by AI agents. A
+person connects OpenClaw-like agents, adds provider-referenced payment methods
+or a feature-gated local research card with personal/business billing
+information, assigns allowed cards to agents, configures review, and retains an
+attributable history of proposals, purchases, and subscriptions.
 
-The first release is **supervised autonomy by default**: the agent researches and proposes, and every new agent initially requires human approval. An owner can opt individual agents into limited server-side automatic approval rules. For proposals that explicitly name an operator-configured adapter and checkout URL, approval queues a narrow Browserbase + Stripe Issuing checkout owned by AG Pay; a separate development-only adapter opens an offer-specific, pre-existing Stripe test Checkout Session URL for a complete fake-card proof. OpenClaw must pass both managed fields in each purchase tool call because neither the plugin nor playground supplies defaults, and the tool rejects a missing or partial pair before contacting AG Pay. Older or direct API-created proposals without both managed fields retain legacy agent-reported sandbox completion: approving them does not queue payment. Neither managed rail turns an arbitrary source product URL into a merchant order. AG Pay is not a card issuer, card vault, bank, merchant of record, acquirer, or universal payment executor.
+The first release is **supervised autonomy by default**: the agent researches
+and proposes, and every new agent initially requires human approval. An owner
+can opt individual agents into limited server-side automatic approval rules.
+For proposals that explicitly name an operator-configured adapter and checkout
+URL, approval can queue the narrow Browserbase + Stripe Issuing path or the
+development-only hosted Stripe test proof. A third, disabled-by-default
+`local_direct_card` rail stores an owner-scoped encrypted PAN and accepts CVC
+only with human approval for an explicit direct research adapter. OpenClaw must
+pass both managed fields because neither plugin nor playground supplies
+defaults. Older/direct API proposals without both fields retain legacy
+agent-reported sandbox completion: approval queues no payment. None of these
+paths turns an arbitrary source URL into a merchant order. AG Pay is not a card
+issuer, production card vault, bank, merchant of record, acquirer, or universal
+payment executor.
 
 ## Problem
 
@@ -35,7 +52,13 @@ An OpenClaw-like process is paired to exactly one platform user. It heartbeats, 
 
 ### Payment provider or issuer
 
-A third party tokenizes or issues cards and owns the durable raw-card-data boundary. The configured-merchant worker supports Stripe Issuing virtual-card references and retrieves expanded number/CVC fields only into transient worker memory immediately before deterministic form fill. The development-only hosted proof uses public fixed Stripe test values materialized inside that same trusted worker. The server stores only the opaque or safe fake reference and display metadata.
+A third party normally tokenizes/issues cards and owns the durable raw-card-data
+boundary. The configured-merchant worker retrieves a Stripe Issuing card only
+into transient memory; the hosted proof materializes fixed public test values
+inside the trusted worker. The local research exception stores PAN only as
+tenant-scoped Fernet ciphertext. Its CVC is never durable: the human provides it
+at approval and the worker consumes it once from short-lived memory. Production
+still requires provider-hosted onboarding.
 
 ### Operator
 
@@ -59,7 +82,9 @@ The web app can sign out by clearing its local session cookie. The backend does 
 - Review an overview with setup progress, connection health, pending decisions, and recent purchases.
 - Create, re-pair, and revoke agents; display one-time pairing tokens and poll for a successful handshake.
 - Inspect compact OpenClaw/Hermes runtime cards and open a detail sheet for health, capabilities, assignments, re-pairing, and revocation.
-- Add safe sandbox/provider payment-method metadata with personal or business billing information, view it as a masked virtual card, and manage agent/card assignments.
+- Add safe sandbox/provider payment-method metadata or, when explicitly
+  enabled locally, enroll encrypted PAN without CVC; view only masked cards and
+  manage agent/card assignments.
 - Configure each agent's review policy on `/rules`.
 - Review proposed, approved, purchased, and cancelled cart items; approve or
   cancel proposals; inspect managed status timelines and active Browserbase
@@ -85,7 +110,11 @@ The single-step token exchange proves possession of the pairing secret. Signed c
 
 ### Payment methods and billing information
 
-- Attach provider-tokenized card references; never accept PAN or CVC.
+- Attach provider-tokenized card references through the normal endpoint.
+- In development/test only, accept a validated PAN through a separate local
+  direct-card endpoint and store only dedicated-key ciphertext.
+- Accept CVC only with human approval of one local direct managed execution;
+  keep it only in the worker's TTL-bound one-shot memory broker.
 - Store safe display metadata: name, provider, brand, last four, and expiry.
 - Accept personal billing details: name, email/phone, and address.
 - Accept business billing details: legal/contact names, VAT number, registration number, email/phone, and address.
@@ -171,16 +200,23 @@ Changing local subscription status does not execute a merchant cancellation.
 
 ### Add and assign a card
 
-1. In the web UI, the user supplies an opaque provider reference and safe display metadata; raw PAN and CVC fields do not exist.
+1. In the normal web form, the user supplies an opaque provider reference and
+   safe display metadata; PAN and CVC fields do not exist.
 2. For configured-merchant managed sandbox checkout, the reference is a Stripe
    Issuing `ic_...` identifier. For the development-only `stripe-hosted` proof,
    the seeder creates safe `pm_stripe_demo_*` fixture references. Provider-hosted
    onboarding remains required before production use.
-3. The user sends only the provider reference, safe card metadata, and personal/business billing details to AG Pay.
-4. The user assigns the method to one or more agents.
+3. As a separate local research branch, the feature-gated direct-card form
+   sends PAN, expiry, and billing details—but no CVC—to FastAPI. It derives safe
+   metadata and stores only an opaque `ldc_...` method plus owner-scoped
+   encrypted PAN.
+4. The user assigns the method to one or more agents. A local direct method is
+   never automatically selected and is valid only for managed checkout.
 5. AG Pay prevents approval/completion after the card is disabled or unassigned.
 
-Use only fake references or Stripe test-mode Issuing references until provider onboarding, PCI, security, and compliance gates are complete.
+Use provider sandbox references or a controlled local direct-card experiment
+until provider onboarding, PCI, security, and compliance gates are complete.
+The local rail is not production onboarding or universal merchant support.
 
 ### Configure an approval rule
 
@@ -198,8 +234,15 @@ Use only fake references or Stripe test-mode Issuing references until provider o
 2. AG Pay calculates the total and evaluates the agent's review mode, recurrence, and threshold currency/amount.
 3. If review is required—or no active assigned card is available—the item remains `proposed`; the user reviews its facts and selects an assigned card to approve, or cancels it.
 4. If review is not required and an active assigned card exists, AG Pay records the item as `approved` immediately. The user can still inspect it in the Approved queue.
-5. For a managed proposal, approval and a durable `queued` execution commit together. Approval of an older or direct API-created legacy proposal without both managed fields records only a decision and queues no payment. A dedicated worker leases the managed job, revalidates state/card assignment/origin plus the exact product, quantity, and total, creates a non-recorded Browserbase session, and retrieves the tenant-bound Stripe Issuing virtual card just in time.
-6. The worker persists the irreversible boundary before the first card-field fill, uses deterministic frame-bound elements, and correlates merchant success with an exact issuer authorization. It never retries automatically after the boundary.
+5. For a managed proposal, approval and one durable `queued` execution commit
+   together. Approval of a legacy proposal without both managed fields records
+   only a decision. The worker leases the job, revalidates tenant/assignment,
+   origin, exact product, quantity, and total, and opens a non-recorded
+   Browserbase session.
+6. On Stripe Issuing it retrieves the tenant-bound virtual card just in time
+   and correlates merchant success with an exact issuer authorization. It
+   persists the irreversible boundary before the first card-field fill and
+   never retries automatically after that boundary.
 7. AG Pay transactionally creates the one-time managed purchase and sanitized terminal agent event. Legacy confirmed recurring proposals may still create a locally tracked subscription. OpenClaw polls managed events by durable cursor and wakes the originating session with a fixed safe message.
 8. A definite pre-submit failure, interactive challenge, or ambiguous post-submit result becomes `failed`, `action_required`, or `outcome_unknown`. A legacy proposal can still use the gated external sandbox result endpoint.
 9. The user sees the state in approvals and purchase/subscription history and can reveal the merchant login with current-password confirmation.
@@ -223,12 +266,25 @@ keyless rail, every non-success result after submission is
 `outcome_unknown` for manual reconciliation; only the verified landing receipt
 can establish success.
 
+For `local_direct_card`, human approval also carries a fresh three- or
+four-digit CVC. FastAPI stages it through an authenticated private Unix socket
+in worker-owned memory; it is bound to the execution/owner/method and consumed
+once before its short TTL. CVC is never in PostgreSQL, Redis, a file, logs, or
+events. Before decrypting PAN or taking CVC, Stagehand uses Browserbase
+`observe` only to identify empty payment/billing/submit controls. The worker
+validates and freezes those selectors, then fixed native JavaScript and
+Playwright perform every fill and click. The model neither sees values nor acts
+on the page. Direct success requires the configured merchant success marker and
+order reference, but that merchant-observed result is not issuer authorization,
+settlement, or clearing proof.
+
 ## Acceptance criteria for the prototype
 
 - A user can register, authenticate, and read only their resources.
 - A user can perform the human management journeys through the web UI without exposing the FastAPI bearer token to browser JavaScript.
 - A user can pair an agent with a single-use expiring token and see online/offline heartbeat state.
-- A user can add both personal and business tokenized payment-method records.
+- A user can add both personal and business provider-referenced methods and can
+  enroll a local encrypted-PAN method only when the research feature is enabled.
 - One card can be assigned to multiple agents and one agent to multiple cards.
 - An agent can propose a complete cart item including rationale and merchant login.
 - Every OpenClaw managed purchase call explicitly supplies its adapter and
@@ -252,13 +308,24 @@ can establish success.
   order from the source product URL. A single fixed URL cannot represent
   multiple offers, and a submitted non-success result is always
   `outcome_unknown` rather than an inferred decline or challenge.
-- Browserbase payment sessions disable recording, logging, CAPTCHA solving, and persistent context.
+- Configured Issuing and local direct Browserbase sessions disable recording,
+  logging, CAPTCHA solving, and persistent context. The hosted public-fixture
+  proof intentionally records/logs its test-only session for replay.
+- Local direct form analysis is observe-only, occurs before secrets are loaded,
+  persists selectors only, and leaves every mutation/click to deterministic
+  JavaScript/Playwright.
 - Managed execution never automatically retries after `submitted_at`; ambiguous outcomes are visible to the user and agent.
 - OpenClaw receives a sanitized terminal event routed to the originating session without any Browserbase/provider/card secret.
 - Completed one-time purchases and monthly/yearly subscriptions can be listed with agent/card attribution.
 - Merchant passwords are encrypted and excluded from ordinary responses.
 - Cross-user/agent negative tests demonstrate tenant isolation.
-- Raw PAN and CVC never enter API storage, logs, or Redis events; tests use only clearly fake values to verify that card-secret fields are rejected.
+- The normal provider endpoint rejects PAN/CVC-shaped input. The local direct
+  endpoint stores PAN only as owner-scoped ciphertext and never returns or logs
+  it. CVC is accepted only at direct approval and is never persisted, logged,
+  published to Redis, or supplied to the model.
+- Local direct success is explicitly merchant-observed research evidence, not
+  issuer authorization; any ambiguous post-submit outcome is
+  `outcome_unknown` with no automatic retry.
 
 ## Explicit non-goals for the managed-checkout prototype
 
@@ -266,7 +333,10 @@ can establish success.
 - Giving a language model raw PAN, CVC, PIN, or 3-D Secure secrets.
 - Provider webhook ingestion, refunds, disputes, chargebacks, or settlement reconciliation.
 - Automatic retry or automatic resolution of an ambiguous post-submit checkout.
-- Universal arbitrary-site checkout, LLM-generated payment selectors, or treating a review threshold as a real issuer spend cap.
+- Universal arbitrary-site checkout, LLM page actions, unvalidated selector
+  execution, or treating a review threshold as a real issuer spend cap. The
+  local experiment permits observe-only selector proposals before secrets,
+  followed by validation and deterministic execution.
 - Issuer-enforced per-purchase limits, cumulative budgets, risk scoring, or organization-wide policy inheritance.
 - Immutable merchant SKU/variant binding for catalogs where title and price are
   not unique.
@@ -280,20 +350,25 @@ The delivery sequence is:
 
 1. Retain the implemented Stripe Playground (`stripe-hosted`) as the visual,
    end-to-end development proof.
-2. Broaden and harden the current narrow configured-merchant/Stripe Issuing
+2. Retain `local_direct_card` only as the implemented, feature-gated research
+   proof of encrypted PAN, approval-time ephemeral CVC, observe-only mapping,
+   and deterministic injection. Do not present its merchant-page result as
+   issuer proof or enable it outside development/test.
+3. Broaden and harden the current narrow configured-merchant/Stripe Issuing
    path so reviewed adapters can inject provider-issued, short-lived payment
    credentials directly into allowlisted merchant forms without exposing them
    to the model or control plane.
-3. Add provider adapters for Visa and Mastercard agent-commerce capabilities,
+4. Add provider adapters for Visa and Mastercard agent-commerce capabilities,
    subject to access, onboarding, certification, regional availability, and
    compliance review. These adapters should use provider-hosted enrollment,
    authenticated bounded instructions, network controls, and outcome signals;
    AG Pay must continue to store only opaque references and safe metadata.
-4. Extend the same provider-neutral boundary to additional issuers, wallets,
+5. Extend the same provider-neutral boundary to additional issuers, wallets,
    PSPs, merchant APIs, and agent ecosystems.
 
-Steps 2–4 are roadmap work. They do not claim universal merchant coverage,
-network approval or endorsement, or production availability.
+Steps 3–5 are roadmap work. The implemented research rail in step 2 is not a
+claim of universal merchant coverage, network approval/endorsement, or
+production availability.
 
 Before real autonomous purchasing:
 

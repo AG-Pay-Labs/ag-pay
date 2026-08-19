@@ -2,7 +2,15 @@
 
 ## Architecture at a glance
 
-The prototype combines a responsive Next.js management application, a modular FastAPI service, and a dedicated checkout worker backed by PostgreSQL and Redis. The Next.js server is a backend-for-frontend (BFF) for human sessions and API calls. PostgreSQL is the durable source of truth for approvals, checkout jobs, human-visible checkout status histories, terminal agent events, and purchase records. Redis provides agent presence and best-effort domain-event transport. Raw card details are never stored by AG Pay and exist only transiently inside the trusted worker.
+The prototype combines a responsive Next.js management application, a modular
+FastAPI service, and a dedicated checkout worker backed by PostgreSQL and Redis.
+The Next.js server is a backend-for-frontend (BFF) for human sessions and API
+calls. PostgreSQL is the durable source of truth for approvals, checkout jobs,
+human-visible checkout status histories, terminal agent events, purchase
+records, and—only for the development/test local direct-card rail—owner-scoped
+encrypted PAN. Redis provides agent presence and best-effort domain-event
+transport; it never carries CVC. Approval-time CVC is handed to the worker's
+private in-memory broker and consumed once.
 
 ```mermaid
 flowchart LR
@@ -11,8 +19,10 @@ flowchart LR
     A["OpenClaw-like agent"] -->|"Pair, heartbeat, propose, receive outcome"| API
     API --> PG["PostgreSQL"]
     API --> R["Redis presence + Streams"]
-    API -->|"Durable checkout job"| W["Trusted checkout worker"]
-    W -->|"Create privacy-restricted session"| BB["Browserbase"]
+    API -->|"Approval-time CVC over private Unix socket"| W["Trusted checkout worker + in-memory CVC broker"]
+    PG -->|"Durable job; encrypted local PAN when selected"| W
+    W -->|"Observe empty form only"| MAP["Stagehand selector mapping"]
+    W -->|"Create privacy-restricted session; deterministic actions"| BB["Browserbase"]
     W -->|"Retrieve Issuing card / correlate authorization"| PSP["Stripe provider / issuer"]
     BB -->|"Deterministic allowlisted checkout"| M["Configured merchant / Stripe-hosted test page"]
     BB -->|"Success redirect"| L["letyouragentspay.com verification landing"]
@@ -20,8 +30,8 @@ flowchart LR
     PG -->|"Sanitized cursor events"| A
 ```
 
-The prototype is a control plane with narrow execution adapters, not a card
-vault, acquirer, or universal payment processor. An agent proposes an item and
+The prototype is a control plane with narrow execution adapters, not a
+production card vault, acquirer, or universal payment processor. An agent proposes an item and
 may explicitly name an operator-configured checkout adapter and URL. Every
 managed proposal waits for explicit human approval; per-agent policies can
 auto-approve only unmanaged legacy proposals. For an OpenClaw managed purchase,
@@ -38,6 +48,15 @@ proposal's source product URL. Proposals without managed checkout retain the
 legacy sandbox/external result path: approval alone does not queue a worker or
 process payment, and adding checkout fields requires a new proposal.
 
+A third path, `local_direct_card`, is disabled by default and fails
+configuration outside `development`/`test`. The platform encrypts PAN in an
+owner-scoped credential row and accepts CVC only with human approval of an
+explicit direct-adapter proposal. Stagehand observes an empty checkout form
+before secrets are loaded and proposes controls only; validation freezes the
+selector map, then fixed JavaScript/Playwright performs fill and submit. A
+merchant success marker/order reference is merchant-observed evidence only,
+not issuer authorization or settlement proof.
+
 ## Goals and tradeoffs
 
 The architecture prioritizes:
@@ -46,7 +65,8 @@ The architecture prioritizes:
 - human review by default, with explicit owner-configured and fail-safe per-agent policy evaluation;
 - attributable agent/card/purchase relationships;
 - one transactional database boundary while the domain evolves;
-- a narrow, isolated secret path based on provider references and just-in-time retrieval;
+- narrow, isolated secret paths based on provider references or encrypted local
+  PAN, with just-in-time retrieval and no durable CVC;
 - explicit ambiguous-outcome handling and durable agent notification;
 - clear upgrade points for provider-hosted onboarding, reconciliation, and SDKs.
 
@@ -61,7 +81,8 @@ The web application lives at `dev/ag-pay-platform/apps/web`. It uses the Next.js
 - registration, login, local sign-out, and guarded application routes;
 - an overview of setup state, agent connectivity, pending decisions, and recent purchases;
 - agent creation/pairing, re-pairing, revocation, and payment-method assignment;
-- safe sandbox payment-method entry for personal or business billing profiles;
+- safe sandbox/provider payment-method entry plus a feature-gated local
+  direct-card enrollment form for personal or business billing profiles;
 - per-agent purchase-review rules with `always` as the default;
 - cart review and approve/cancel decisions, ordered managed-checkout status
   timelines, active-session inspection, terminal outcome toasts, and
@@ -75,7 +96,7 @@ The web application lives at `dev/ag-pay-platform/apps/web`. It uses the Next.js
 | `/approvals` | Proposed, approved, and historical review; human decisions and credential reveal |
 | `/rules` | Per-agent `always`, recurrence, total-threshold, combined, or `never` review modes |
 | `/agents` | Compact OpenClaw/Hermes identity cards and detail sheets for connectivity, assignments, re-pair, and revoke |
-| `/cards` | Masked virtual-card presentation of safe token/reference metadata and personal/business billing profiles |
+| `/cards` | Masked card presentation, provider-reference entry, and feature-gated local encrypted-PAN enrollment |
 | `/purchases` | Completed purchase attribution and details |
 | `/subscriptions` | Monthly/yearly commitments and local tracking status |
 
@@ -124,12 +145,20 @@ does not prove that a purchase occurred.
 
 ### PostgreSQL
 
-PostgreSQL owns all durable users, enrollment data, token hashes, cards, assignments, per-agent payment policies, cart items, encrypted purchase credentials, checkout executions, sanitized checkout events, purchases, and subscriptions.
+PostgreSQL owns all durable users, enrollment data, token hashes, cards,
+assignments, per-agent payment policies, cart items, encrypted purchase
+credentials, checkout executions, sanitized checkout events, purchases, and
+subscriptions. In the local direct-card research mode it also owns one
+tenant-scoped `StoredCardCredential` per local method containing only encrypted
+PAN; CVC has no durable model. An execution may persist the validated
+`resolved_form_config`, which contains selectors only.
 
 Important constraints include:
 
 - unique username;
 - unique provider reference per owner/provider;
+- at most one encrypted local credential per payment method, with an explicit
+  owner foreign key;
 - composite primary key for each agent/card assignment;
 - one owner-scoped payment-policy record per agent, with threshold fields constrained to threshold modes;
 - one credential and at most one purchase per cart item;
@@ -152,6 +181,11 @@ PostgreSQL remains authoritative. If Redis is unavailable, business commits are 
 
 Checkout work and OpenClaw outcome delivery do not depend on Redis. The checkout row is the durable job, and its terminal event is committed with the outcome. A general transactional outbox remains required before other best-effort events trigger financial side effects.
 
+Redis persistence is deliberately not used for direct-card CVC. The only CVC
+handoff is an authenticated private Unix socket to a TTL-bound dictionary owned
+by the checkout-worker process; `take` removes the execution/owner/method-bound
+value atomically, and worker shutdown/restart clears it.
+
 ### pgAdmin
 
 pgAdmin is a local-only database browser supplied by root Docker Compose. It binds to loopback by default. It is not part of the production runtime and must not be publicly exposed.
@@ -159,7 +193,7 @@ pgAdmin is a local-only database browser supplied by root Docker Compose. It bin
 ### Checkout worker, provider, and secret adapters
 
 The dedicated worker claims PostgreSQL jobs with a lease, serializes work per
-opaque Issuing card with a PostgreSQL advisory lock, connects to a fresh
+selected provider/local card reference with a PostgreSQL advisory lock, connects to a fresh
 Browserbase session, verifies the operator-owned merchant adapter plus exact
 product title, quantity, and total, retrieves a tenant-bound Stripe Issuing
 virtual card by opaque `ic_...` reference, persists the irreversible boundary
@@ -174,6 +208,29 @@ disabled. A fresh context blocks service workers and WebSockets and routes all
 page, popup, frame, and resource HTTP traffic through the adapter's exact
 origin allowlist. The provider response and CDP connection URL are never
 persisted or logged.
+
+For `local_direct_card`, the worker first has Stagehand use Browserbase
+`observe` calls against the empty form. It asks only for the card, expiry, CVC,
+requested billing, and final-submit controls; Stagehand has no act/fill/submit
+role and receives no secret values. The worker requires one visible exact
+match on an allowed frame origin, stores the validated selector map on the
+execution, and only then decrypts owner-scoped PAN and atomically takes CVC from
+its in-memory broker. A fixed native input-value setter dispatches input/change
+events and Playwright performs the deterministic interactions. Direct sessions
+remain unrecorded and unlogged.
+
+The broker listens at an absolute path such as
+`/tmp/agpay-direct-card/cvc.sock`, verifies an independent token, and requires
+a worker-private parent directory and socket permissions. The API must reach
+that worker-owned socket during approval; it never substitutes PostgreSQL,
+Redis, or a file when the worker is absent. Each CVC expires quickly and can be
+read only once for its tenant, method, and execution.
+
+Direct success requires the configured merchant success marker and order
+reference. That can create the research AG Pay purchase record, while configured
+decline/action-required markers can produce their respective states. There is
+no issuer correlation on this rail, so none of those merchant observations
+proves authorization, clearing, or settlement.
 
 The development-only `stripe-hosted` mode uses the same queue, Browserbase
 boundary, status history, and agent-event path but a different verification
@@ -216,6 +273,12 @@ flowchart TB
       HF["Hosted fields / tokenization"]
       PI["PSP or card issuer"]
     end
+    subgraph LocalResearch["Local direct-card boundary (development/test only)"]
+      ECPAN["PostgreSQL encrypted PAN"]
+      CVC["Worker-memory one-shot CVC"]
+      WORKER["Trusted deterministic checkout worker"]
+      OBSERVE["Observe-only selector model"]
+    end
     UI --> BFF
     BFF --> API
     AG --> API
@@ -225,6 +288,12 @@ flowchart TB
     HF --> PI
     PI --> API
     AG --> MER
+    API --> ECPAN
+    API -->|"Private Unix socket"| CVC
+    ECPAN --> WORKER
+    CVC --> WORKER
+    WORKER -->|"Selector requests only; no values"| OBSERVE
+    WORKER --> MER
 ```
 
 The platform treats both human clients and agents as untrusted. The web BFF reduces browser token exposure but does not make browser requests trusted. User JWTs and opaque agent credentials are separate principal types. Submitted URLs, merchant names, rationales, provider references, receipts, and agent capability strings are untrusted input.
@@ -253,17 +322,28 @@ This single-step proof-of-secret handshake meets the prototype's connectivity re
 
 ### Attach and assign a payment method
 
-1. The current web dialog accepts only a clearly fake/sandbox provider reference and safe display metadata; it has no full-card-number or CVC inputs.
-2. A production client must instead collect raw card details through provider-hosted fields and receive an opaque token/reference.
-3. The human sends only the reference, safe display metadata, and validated personal/business billing details to the API through the BFF.
-4. The human assigns the active method to one or more owned agents through an idempotent association.
-5. Disabling a method removes assignments and blocks later approval/completion.
+1. The normal web dialog accepts a fake/sandbox or provider reference and safe
+   display metadata; it has no PAN or CVC inputs.
+2. When the local research feature is enabled, a separate dialog sends PAN,
+   expiry, and validated personal/business billing details to
+   `POST /api/v1/payment-methods/direct-card`. It never accepts CVC.
+3. FastAPI derives safe metadata, creates an opaque `ldc_...` reference, and
+   stores PAN only as dedicated-key ciphertext in an owner-scoped row. Normal
+   responses show only the masked method.
+4. The human assigns the active method to one or more owned agents through an
+   idempotent association. Local direct cards cannot be selected automatically
+   and can be used only for managed checkout.
+5. A production client must instead use provider-hosted collection and receive
+   an opaque token/reference; the local rail is not that onboarding design.
+6. Disabling a method removes assignments and blocks later approval/completion.
 
 Legacy payment methods remain unverified sandbox presentation data. The managed
 path is the narrow exception: at execution time the trusted worker verifies an
 active Stripe Issuing virtual `ic_...` reference, its safe card metadata, and
 provider-owned `agpay_owner_id` tenant binding directly with Stripe. A
-provider-hosted onboarding flow is still required before production.
+provider-hosted onboarding flow is still required before production. The local
+direct exception instead checks the encrypted credential's explicit owner and
+payment-method IDs before decrypting in worker memory.
 
 ### Configure an agent's review policy
 
@@ -327,6 +407,16 @@ session/order reference; the landing server has already verified the approved
 offer facts. The remaining PostgreSQL,
 web status, and OpenClaw event steps are identical.
 
+For the local direct variant, the approval request includes CVC. FastAPI stages
+it in the authenticated worker-memory broker before committing approval; a
+failed database commit performs a receipt-bound discard. After leasing the job,
+the worker verifies the approved facts, observes and validates empty-form
+controls, persists the safe resolved map, decrypts PAN/takes CVC once, records
+`submitted_at` before the first secret fill, and uses deterministic
+JavaScript/Playwright. It does not call Stripe or another issuer. The final
+merchant marker/order reference is therefore only merchant-observed research
+evidence.
+
 The policy evaluator defaults missing/unknown policy data to review. `always`
 reviews every item; recurrence and threshold modes inspect billing period and
 the total `unit_price × quantity`; `never` requests no review for an unmanaged
@@ -354,6 +444,8 @@ Current guarantees:
 - owner-scoped policy updates are row locked, and new-agent/missing-policy defaults are `always`;
 - proposal evaluation and the resulting proposed/approved state commit with the encrypted credential and selected method;
 - approval and managed checkout-job creation commit together;
+- direct-card approval stages CVC only in worker memory and discards that exact
+  receipt when the database transaction cannot commit;
 - checkout lease, attempt count, and submit boundary are durable;
 - purchase creation, optional subscription creation, and the cart transition commit together;
 - managed purchase creation and a sanitized terminal agent event commit together;
@@ -379,6 +471,11 @@ Required production hardening:
 - Rule permits automatic approval but no active assigned method exists: retain `proposed` for human attention.
 - Duplicate completion: database constraints return conflict rather than creating another purchase row.
 - Merchant/provider timeout before submit: retry within the configured limit. At or after submit: record `outcome_unknown` and never auto-retry.
+- Direct-card broker/socket unavailable, expired CVC, or selector validation
+  failure: fail closed before disclosure. Worker restart intentionally loses
+  CVC; create a new proposal/approval rather than reconstructing it durably.
+- Any local direct failure after the first-fill boundary becomes
+  `outcome_unknown`; a merchant page must never be automatically resubmitted.
 - Credential decryption key mismatch: reveal fails; preserve ciphertext and restore the correct key rather than overwriting data.
 
 ## Evolution path
