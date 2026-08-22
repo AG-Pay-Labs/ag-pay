@@ -114,6 +114,9 @@ a new managed proposal.
 - Node.js 24.15.x and pnpm 11.9.0 for one toolchain that satisfies both the web
   application and OpenClaw plugin; and
 - free local ports `3000`, `5050`, `5432`, `6379`, `8000`, and `18789`.
+  The optional no-charge direct-card fixture also uses local port `8101` and
+  requires a trusted public-HTTPS tunnel to that port because Browserbase
+  cannot reach a normal localhost URL.
 
 An OpenAI API key, or another model-provider configuration, is optional and is
 needed only for actual model-backed OpenClaw turns. Never paste provider keys,
@@ -214,6 +217,35 @@ verifies the paid session. The proof needs neither a local demo merchant nor
 port `8100`. Follow the exact approval, verified-success, unknown-outcome,
 status-panel, and OpenClaw verification steps in
 [Managed checkout](docs/managed-checkout.md#stripe-hosted-browserbase-proof-recommended).
+
+### Local card payment research (development/test only)
+
+Developers who need to exercise card enrollment, approval-time CVC handoff,
+Browserbase form mapping, and deterministic form injection can use the
+no-charge direct-card fixture. This path is disabled by default and is separate
+from the recommended Stripe-hosted proof. It never contacts a payment
+processor, must never receive a live card, and its success marker is merchant
+page evidence rather than issuer authorization.
+
+The setup requires developers to:
+
+1. enable `CHECKOUT_ENABLED=true` and `LOCAL_DIRECT_CARD_ENABLED=true` in the
+   platform's untracked `.env`;
+2. generate a dedicated Fernet key and independent CVC-broker token;
+3. configure Browserbase plus an explicit `direct` / `browserbase_ai` adapter;
+4. run `make direct-card-fixture-run`, expose only port `8101` through a trusted
+   HTTPS tunnel, and point the adapter at that exact public origin;
+5. restart the API and keep `make checkout-worker` running before approval;
+6. enroll only a synthetic/test card in **Cards**, assign it to an agent, and
+   supply CVC only in the one-time human approval dialog; and
+7. submit a fresh one-time managed proposal using the fixture's exact adapter,
+   URL, title, quantity, amount, and currency.
+
+Follow the complete environment, terminal, enrollment, proposal, verification,
+and shutdown sequence in [Repository and local development — Run the local
+direct-card no-charge fixture](docs/repository-and-local-development.md#run-the-local-direct-card-no-charge-fixture).
+The credential boundary and failure rules remain canonical in [Managed
+checkout — Local direct-card research procedure](docs/managed-checkout.md#local-direct-card-research-procedure).
 
 ### OpenClaw playground
 

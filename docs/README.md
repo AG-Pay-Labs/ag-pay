@@ -24,9 +24,9 @@ scope or later phases.
 | [Domain model](./domain-model.md) | Entities, relationships, lifecycle states, and invariants |
 | [HTTP API](./api.md) | Implemented `0.1.0` endpoint inventory, payload examples, and known gaps |
 | [Agent pairing and security](./agent-pairing-and-security.md) | Pairing handshake, agent authentication, authorization, and threat controls |
-| [Managed checkout](./managed-checkout.md) | Implemented Browserbase/Stripe and local direct-card research rails, credential boundaries, configuration, and test procedures |
+| [Managed checkout](./managed-checkout.md) | Canonical Browserbase/Stripe and local direct-card credential boundaries, adapter constraints, state machine, and failure rules |
 | [Stripe Link agent payments](./stripe-link-agent-payments.md) | Pinned Link CLI setup, owner-scoped authentication, and supervised hosted test procedure |
-| [Repository and local development](./repository-and-local-development.md) | Multi-repository layout, platform/plugin/playground setup, Docker services, and developer workflow |
+| [Repository and local development](./repository-and-local-development.md) | Full multi-repository setup, Docker services, OpenClaw workflow, Stripe-hosted proof, and no-charge local card procedure |
 | [Operations](./operations.md) | Configuration, observability, backups, migrations, and incident basics |
 
 ## Terminology

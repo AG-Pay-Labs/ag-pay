@@ -81,6 +81,8 @@ The API is one modular service. The web app is a separate Next.js process that a
 - Docker builds the playground's pinned OpenClaw/Node runtime; no compatible
   host Node.js installation is required for that subproject
 - A POSIX-like shell for the examples
+- Free local ports `3000`, `5050`, `5432`, `6379`, `8000`, and `18789`; the
+  optional no-charge direct-card fixture also uses `8101`
 
 ## Start local infrastructure
 
@@ -163,6 +165,176 @@ upgraded; submit a fresh managed request. This mode does not need the local demo
 merchant, an HTTPS tunnel, or port `8100`. It tests the AG Pay status and
 OpenClaw outcome loop; it does not create an order at the proposal's source
 product URL. Follow the full procedure and expected evidence in [Managed checkout](./managed-checkout.md#stripe-hosted-browserbase-proof-recommended).
+
+## Run the local direct-card no-charge fixture
+
+This optional path is for controlled `development`/`test` research only. It
+exercises encrypted PAN storage, approval-time one-shot CVC handoff,
+observe-only form mapping, deterministic browser filling, and durable AG Pay
+outcomes. The built-in fixture does not contact a processor or charge a card.
+Never enter a live card, expose another local service through the tunnel, or
+treat fixture success as issuer authorization.
+
+Complete the core infrastructure, API, and web setup above first. You also need
+a Browserbase project/API key and a trusted HTTPS tunnel that can expose only
+the fixture on `127.0.0.1:8101`.
+
+### 1. Generate independent local secrets
+
+From the base repository, generate a dedicated Fernet key and a separate
+random broker token:
+
+```bash
+cd dev/ag-pay-platform
+apps/api/.venv/bin/python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
+apps/api/.venv/bin/python -c 'import secrets; print(secrets.token_urlsafe(32))'
+```
+
+Copy both outputs only into the untracked platform `.env`. Do not reuse the
+JWT key, merchant-credential encryption key, Gateway token, or another
+application secret. Never paste either generated value into chat, logs, source
+control, or a command argument.
+
+### 2. Start and expose the no-charge fixture
+
+In a separate terminal:
+
+```bash
+cd dev/ag-pay-platform
+make direct-card-fixture-run
+```
+
+The fixture is now at `http://127.0.0.1:8101/checkout`. Start a trusted HTTPS
+tunnel to local port `8101` and record its exact public origin, for example
+`https://YOUR-FIXTURE-HOST`. Expose only `8101`: never tunnel the AG Pay API,
+PostgreSQL, Redis, pgAdmin, or OpenClaw. Keep the fixture and tunnel running for
+the test. Confirm the public route before configuring the adapter:
+
+```bash
+curl -fsS https://YOUR-FIXTURE-HOST/health/live
+curl -fsS https://YOUR-FIXTURE-HOST/checkout >/dev/null
+```
+
+### 3. Enable the rail and configure its explicit adapter
+
+Preserve the existing database, Redis, authentication, and Browserbase values
+in `dev/ag-pay-platform/.env`, then add or update these keys. Replace the two
+generated-value placeholders and every `YOUR-FIXTURE-HOST` occurrence:
+
+```dotenv
+ENVIRONMENT=development
+CHECKOUT_ENABLED=true
+LOCAL_DIRECT_CARD_ENABLED=true
+DIRECT_CARD_ENCRYPTION_KEY=PASTE_DEDICATED_FERNET_KEY
+LOCAL_DIRECT_CARD_BROKER_TOKEN=PASTE_SEPARATE_RANDOM_TOKEN
+LOCAL_DIRECT_CARD_SOCKET_PATH=/tmp/agpay-direct-card/cvc.sock
+LOCAL_DIRECT_CARD_CVC_TTL_SECONDS=300
+LOCAL_DIRECT_CARD_SOCKET_TIMEOUT_SECONDS=2
+CHECKOUT_FORM_ANALYSIS_MODEL=google/gemini-2.5-flash
+CHECKOUT_FORM_ANALYSIS_TIMEOUT_SECONDS=120
+BROWSERBASE_API_KEY=your_private_browserbase_key
+BROWSERBASE_PROJECT_ID=your_private_browserbase_project_id
+CHECKOUT_ADAPTERS={"direct-card-fixture":{"allowed_origins":["https://YOUR-FIXTURE-HOST"],"payment_origins":["https://YOUR-FIXTURE-HOST"],"checkout_mode":"direct","payment_form_strategy":"browserbase_ai","product_title_selector":"#research-product-title","quantity_selector":"#research-quantity","total_selector":"#research-total","success_selector":"#research-success:not([hidden])","order_reference_selector":"#research-order-reference"}}
+```
+
+Use the origin only in `allowed_origins` and `payment_origins`; `/checkout`
+belongs only in the proposal URL. Keep `CHECKOUT_ADAPTERS` as one JSON object.
+If the `.env` already contains adapters, merge `direct-card-fixture` into that
+object instead of adding a second environment line or discarding other
+adapters. The direct adapter intentionally omits card, expiry, billing, CVC,
+and submit selectors so Stagehand must observe the empty form before the worker
+loads any card value.
+
+### 4. Restart the API and start the worker
+
+Settings load at process startup. Stop an already running API or worker with
+`Ctrl+C`, run migrations, then start each process in its own terminal:
+
+```bash
+cd dev/ag-pay-platform
+make api-migrate
+make api-run
+```
+
+```bash
+cd dev/ag-pay-platform
+make checkout-worker
+```
+
+Keep `make web-run`, `make direct-card-fixture-run`, the HTTPS tunnel, and the
+checkout worker running. The worker creates the private socket directory and
+socket; startup fails closed unless their ownership and modes establish the
+required private boundary. The worker must be healthy before approval because
+the API hands CVC directly to its short-lived, one-shot memory broker.
+
+Verify the API after restart:
+
+```bash
+curl -fsS http://127.0.0.1:8000/health/live
+curl -fsS http://127.0.0.1:8000/health/ready
+```
+
+### 5. Enroll and assign a synthetic card
+
+1. Open `http://127.0.0.1:3000`, register or log in, and create an agent.
+2. In **Cards**, choose the local direct-card form.
+3. Enter only a Luhn-valid synthetic/test PAN, expiry, safe billing details,
+   and a display name. Enrollment must not ask for or accept CVC.
+4. Assign the returned local method to the agent that will create the proposal.
+
+The normal card response exposes only safe metadata and an opaque `ldc_...`
+reference. The dedicated encrypted credential row stores PAN ciphertext; CVC
+is never written to PostgreSQL, Redis, a file, event, or log.
+
+### 6. Create and approve one exact managed proposal
+
+Use the paired OpenClaw agent or agent API to create a fresh one-time proposal
+with these exact fixture facts:
+
+| Field | Value |
+| --- | --- |
+| Checkout adapter | `direct-card-fixture` |
+| Checkout URL | `https://YOUR-FIXTURE-HOST/checkout` |
+| Title | `AG Pay direct-card research fixture` |
+| Quantity | `1` |
+| Unit price | `25.00` |
+| Currency | `EUR` |
+| Billing period | none / one-time |
+
+Local direct methods are never automatically selected or approved. In the AG
+Pay approval dialog, inspect the frozen product facts, explicitly select the
+assigned local method, enter a three- or four-digit test CVC, and approve once.
+CVC expires after the configured TTL and is consumed exactly once.
+
+### 7. Verify the result and stop safely
+
+The expected execution path is `queued -> running -> succeeded`, with a
+`fixture-...` merchant order reference and one local research purchase record.
+This verifies AG Pay's local handoff and browser workflow only; it proves no
+authorization, processor interaction, charge, settlement, or arbitrary-site
+compatibility.
+
+If any error occurs after the first possible card fill, AG Pay records
+`outcome_unknown`. Do not approve or submit the same proposal again. Investigate
+the status, then create a new proposal only after confirming that the fixture
+did not submit. Stop immediately if a non-fixture page introduces CAPTCHA, 3-D
+Secure, a new origin/frame, ambiguous controls, changed product facts, or an
+unreconcilable result.
+
+Stop the API, web app, fixture, worker, and tunnel with `Ctrl+C`. Stop shared
+services without deleting data:
+
+```bash
+cd dev/ag-openclaw-playground
+make down
+
+cd ../..
+make infra-down
+```
+
+For the detailed credential boundary, adapter constraints, state machine, and
+failure contract, read [Managed checkout — Local direct-card research
+procedure](./managed-checkout.md#local-direct-card-research-procedure).
 
 ## Run the OpenClaw playground
 

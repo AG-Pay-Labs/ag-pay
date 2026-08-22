@@ -353,7 +353,19 @@ Use this rail only against a controlled public-HTTPS checkout in a local
 adapter key is not inferred from a URL.
 
 1. Generate a dedicated Fernet key and a separate random broker token of at
-   least 32 characters. Keep both only in the untracked platform `.env`.
+   least 32 characters. After `make api-install`, run the following from the
+   base repository and copy both outputs only into the untracked platform
+   `.env`:
+
+   ```bash
+   cd dev/ag-pay-platform
+   apps/api/.venv/bin/python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
+   apps/api/.venv/bin/python -c 'import secrets; print(secrets.token_urlsafe(32))'
+   ```
+
+   Do not reuse the JWT key, merchant-credential encryption key, Gateway token,
+   or another application secret, and never paste either generated value into
+   chat, logs, source control, or a command argument.
 2. Configure Browserbase and an explicit adapter. The adapter must use
    `checkout_mode=direct` and `payment_form_strategy=browserbase_ai`, retain
    operator-authored product/quantity/total and result selectors, include an
@@ -378,9 +390,11 @@ adapter key is not inferred from a URL.
    CHECKOUT_ADAPTERS={"research_store":{"allowed_origins":["https://merchant.example.test"],"payment_origins":["https://merchant.example.test"],"checkout_mode":"direct","payment_form_strategy":"browserbase_ai","product_title_selector":"[data-test=product-title]","quantity_selector":"[data-test=quantity]","total_selector":"[data-test=total]","success_selector":"[data-test=success]","decline_selector":"[data-test=declined]","action_required_selector":"[data-test=action-required]","order_reference_selector":"[data-test=order-id]","receipt_url_selector":"[data-test=receipt]"}}
    ```
 
-4. Run migrations, then start the worker before the API accepts an approval.
-   The worker creates the private socket parent and socket; startup fails if
-   their ownership/type/mode checks do not establish a worker-private boundary.
+4. Settings load at process startup. After changing `.env`, stop and restart
+   the API and any existing worker, run migrations, then keep
+   `make checkout-worker` running before the API accepts an approval. The
+   worker creates the private socket parent and socket; startup fails if their
+   ownership/type/mode checks do not establish a worker-private boundary.
 5. In **Cards**, use the direct-card form. Enrollment accepts PAN, expiry, safe
    billing details, and a display name, but not CVC. The returned method exposes
    only safe metadata and the opaque local reference. Assign it to the agent.

@@ -77,6 +77,18 @@ is clearly reported as requiring user input.
     and the non-destructive stop commands. Never delete Compose volumes as part
     of setup.
 
+The disabled-by-default local direct-card rail is not part of the automatic
+bootstrap. When the user explicitly asks to enable or test local card payment,
+follow `docs/repository-and-local-development.md#run-the-local-direct-card-no-charge-fixture`
+and the canonical safety contract in
+`docs/managed-checkout.md#local-direct-card-research-procedure`. Use only the
+built-in no-charge fixture or another explicitly controlled public-HTTPS test
+checkout, expose only fixture port `8101`, and require synthetic/test card
+values. Never enable this rail in staging/production, accept a live card into
+the fixture, print generated keys, or retry a checkout after submission may
+have occurred. Browserbase credentials, HTTPS-tunnel operation, card entry,
+CVC entry, and final approval remain human/operator steps.
+
 ## Product and security invariants
 
 - The platform is supervised autonomy in the prototype: an agent proposes and a
